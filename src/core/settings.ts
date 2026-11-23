@@ -15,6 +15,9 @@ export type Settings = {
   // "roam: false" keeps it in place instead of strolling around the screen.
   // "roamSeconds" is how long it stays in one place between glides: [least, most].
   character?: { x?: number; y?: number; roam?: boolean; roamSeconds?: [number, number] };
+  // When the agent turns to the user by itself. "minutesBefore": how long before
+  // a meeting. "quietHours": [from, to], the hours in which it stays silent.
+  initiative?: { enabled?: boolean; minutesBefore?: number; quietHours?: [number, number] };
 };
 
 /**

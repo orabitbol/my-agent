@@ -2,7 +2,8 @@
 // It starts the local server inside the app and shows the chat page in a window.
 
 import "./load-env.js"; // must stay first
-import { app, BrowserWindow, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, Notification, session, shell, systemPreferences } from "electron";
+import { startInitiative } from "../core/initiative.js";
 import { Agent } from "../core/agent.js";
 import { computerTool } from "../core/tools/computer.js";
 import { tools as coreTools } from "../core/tools/index.js";
@@ -85,7 +86,15 @@ void app.whenReady().then(async () => {
     allow(permission === "media" && webContents === mainWindow?.webContents && webContents.getURL().startsWith(serverUrl));
   });
   openWindow();
-  void openCharacter({ serverUrl, keepInside, chatReady });
+  const character = await openCharacter({ serverUrl, keepInside, chatReady });
+
+  // Initiative: before a meeting the agent speaks up by itself. It says it in a
+  // bubble next to the character, as a system notification, and in the chat.
+  startInitiative(({ text }) => {
+    character.say(text);
+    if (Notification.isSupported()) new Notification({ title: "האייג'נט שלי", body: text }).show();
+    void fetch(serverUrl + "/api/character/nudge", { method: "POST", body: JSON.stringify({ text }) }).catch(() => {});
+  });
 });
 
 // macOS: clicking the dock icon reopens the window; closing it keeps the app alive.

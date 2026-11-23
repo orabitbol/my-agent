@@ -958,6 +958,8 @@
   const characterEvents = new EventSource("/api/character");
   characterEvents.addEventListener("poke", () => { if (voice) stopVoice(); else startVoice(); });
   characterEvents.addEventListener("hold", (event) => setHolding(event.data === "down"));
+  // The agent turned to the user by itself (a meeting is about to start): keep it in the chat too.
+  characterEvents.addEventListener("nudge", (event) => addNote(event.data));
 
   function stopVoice(note) {
     const session = voice;

@@ -29,7 +29,16 @@ export type CharacterOptions = {
 const between = (min: number, max: number) => min + Math.random() * (max - min);
 const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
-export async function openCharacter(options: CharacterOptions): Promise<BrowserWindow> {
+// What the app can ask of the character once it is on the screen.
+export type CharacterWindow = {
+  window: BrowserWindow;
+  // Shows a speech bubble next to it for a few seconds.
+  say: (text: string) => void;
+};
+
+const SAY_MS = 9000; // how long a speech bubble stays
+
+export async function openCharacter(options: CharacterOptions): Promise<CharacterWindow> {
   const settings = await loadSettings();
   const roams = settings.character?.roam !== false;
   const [stayMin, stayMax] = settings.character?.roamSeconds ?? ROAM_SECONDS;
@@ -85,6 +94,7 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
   let lastTouched = 0;           // the last time the user moved it
   let dragging: { offset: Point; timer: NodeJS.Timeout } | null = null;
   let gliding = false;
+  let talking = false;
   let asleep = false;
   const busy = () => !["resting", "ready"].includes(state);
 
@@ -177,7 +187,7 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
 
   // One glide to a new place, on this screen or across to another one.
   async function glide(to: Point): Promise<void> {
-    if (gliding) return; // one journey at a time
+    if (gliding || talking) return; // one journey at a time, and not while it is saying something
     const from = position();
     const distance = Math.hypot(to.x - from.x, to.y - from.y);
     const duration = Math.round(Math.min(2400, 800 + distance * 0.9));
@@ -307,5 +317,34 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
   // Appear without taking the keyboard away from the app the user is in.
   window.once("ready-to-show", () => window.showInactive());
   void window.loadURL(options.serverUrl + "/character");
-  return window;
+  // ---- speaking up ----
+  // A speech bubble next to the character, drawn on the stage of its screen.
+  // Clicks pass through it, so it never gets in the way of the user's work.
+  async function sayNow(text: string): Promise<void> {
+    while (gliding) await wait(200);
+    if (window.isDestroyed()) return;
+    lastActivity = Date.now(); // it wakes up to say it
+    const here = position();
+    const stage = stageFor(displayOf(here));
+    if (stage.webContents.isLoading()) return;
+    const area = stage.getBounds();
+    talking = true;
+    try {
+      stage.webContents.send("character:event", "say", { text, x: here.x + SIZE / 2 - area.x, y: here.y + (SIZE - BODY) / 2 - area.y, width: area.width });
+      stage.showInactive();
+      tell("land"); // a small move, so the eye catches it
+      await wait(SAY_MS);
+    } finally {
+      talking = false;
+      if (!stage.isDestroyed()) {
+        stage.webContents.send("character:event", "hush");
+        if (!gliding) stage.hide();
+      }
+    }
+  }
+  // Two things to say at once are said one after the other.
+  let saying = Promise.resolve();
+  const say = (text: string) => void (saying = saying.then(() => sayNow(text)).catch(() => {}));
+
+  return { window, say };
 }

@@ -29,6 +29,20 @@
   body.stage { display: block; }
   body.stage .character, .ghost { position: absolute; inset-block-start: 0; left: 0; pointer-events: none; will-change: transform; }
   body.stage .character { visibility: hidden; }
+  /* What it says when it turns to the user by itself: a speech bubble beside it. */
+  #bubble {
+    position: absolute; inset-block-start: 0; left: 0;
+    max-width: var(--character-bubble);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-large);
+    background: var(--surface-window);
+    color: var(--label);
+    box-shadow: var(--shadow-popover);
+    font: var(--weight-medium) var(--text-message)/var(--lh-message) -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    unicode-bidi: plaintext;
+    pointer-events: none;
+    animation: appear var(--duration) var(--ease);
+  }
   .ghost {
     width: var(--character-size); height: var(--character-size);
     border-radius: var(--radius-full);
@@ -137,6 +151,7 @@
   @keyframes talk   { to { height: var(--space-3); } }
   @keyframes ring   { from { transform: scale(0.9); opacity: 0.55; } to { transform: scale(1.5); opacity: 0; } }
   @keyframes nudge  { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(calc(var(--space-2) * -1)); } }
+  @keyframes appear { from { opacity: 0; transform: translateY(var(--space-1)); } }
   @keyframes land {
     0%   { transform: scale(1.08, 0.92); }
     55%  { transform: scale(0.98, 1.03); }
@@ -150,6 +165,7 @@
 </head>
 <body>
   <div id="trail"></div>
+  <div id="bubble" role="status" hidden></div>
   <div class="character" id="character" data-state="resting" role="button" aria-label="הדמות של האייג'נט">
     <div class="hopper"><div class="floater">
       <div class="glow"></div>
@@ -218,7 +234,23 @@
     }
     if (onStage && name === "fly") fly(data);
     if (onStage && name === "rest") rest();
+    if (onStage && name === "say") say(data);
+    if (onStage && name === "hush") bubble.hidden = true;
   });
+
+  // ---- speaking up ----
+  // The bubble sits above the character's head and opens toward the middle of
+  // the screen, so it is never cut off at an edge.
+  const bubble = document.getElementById("bubble");
+  function say({ text, x, y, width }) {
+    bubble.textContent = text;
+    bubble.hidden = false;
+    const gap = 12, half = 44; // room above the head, and half the character's width
+    const box = bubble.getBoundingClientRect();
+    const left = x > width / 2 ? x + half - box.width : x - half;
+    const top = y - gap - box.height >= gap ? y - gap - box.height : y + 2 * half + gap;
+    bubble.style.transform = `translate(${Math.max(gap, Math.min(width - box.width - gap, left))}px, ${top}px)`;
+  }
 
   // ---- gliding across the stage ----
   // The path is a gentle arc. It starts slowly, speeds up and slows down again,

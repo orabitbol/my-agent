@@ -24,7 +24,8 @@ export function isCharacterState(value: unknown): value is CharacterState {
 //   "level": how loud the agent's voice is right now, 0 to 1, so its mouth can follow
 //   "vision": whether the agent may see the screen right now ("on" or "off")
 //   "glance": it has just looked at the screen
-export type CharacterSignal = "state" | "poke" | "hold" | "level" | "vision" | "glance";
+//   "nudge":  the agent turned to the user by itself; the data is what it said
+export type CharacterSignal = "state" | "poke" | "hold" | "level" | "vision" | "glance" | "nudge";
 
 export class Character {
   private current: CharacterState = "resting";

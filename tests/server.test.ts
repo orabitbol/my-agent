@@ -210,6 +210,10 @@ test("character: a click, a hold and the voice level reach every screen by name"
   await post("/api/character/level", { level: 0.456 });
   assert.equal(await next(), "event: level\ndata: 0.46\n\n");
   for (const level of [2, -1, "loud"]) assert.equal((await post("/api/character/level", { level })).status, 400);
+  // What the agent says on its own initiative reaches the chat as one clean line.
+  await post("/api/character/nudge", { text: "בעוד 10 דקות:\n  פגישה" });
+  assert.equal(await next(), "event: nudge\ndata: בעוד 10 דקות: פגישה\n\n");
+  assert.equal((await post("/api/character/nudge", { text: " " })).status, 400);
   await reader.cancel();
 });
 

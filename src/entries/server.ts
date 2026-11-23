@@ -213,6 +213,14 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         response.writeHead(204).end();
         return;
       }
+      // The agent turned to the user by itself (see core/initiative.ts). The chat shows it too.
+      if (request.method === "POST" && request.url === "/api/character/nudge") {
+        const said = String((await readJson(request)).text ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
+        if (!said) return void response.writeHead(400).end();
+        character.signal("nudge", said);
+        response.writeHead(204).end();
+        return;
+      }
       // Whether the agent may see the screen right now, and the moment it looks.
       if (request.method === "POST" && request.url === "/api/character/vision") {
         character.setVision((await readJson(request)).on === true);
