@@ -1,0 +1,138 @@
+/* DESIGN SYSTEM: the single source of every visual value in the project.
+
+   Based on Apple's Human Interface Guidelines for macOS: system colors,
+   the macOS text styles, an 8-point spacing grid and standard control shapes.
+
+   Rules:
+   1. Never write a raw color, font size, spacing, radius or duration in a
+      component. Use a token from this file. If a value is missing, add a
+      token here first.
+   2. Every color has a light and a dark value. Never design one mode only.
+   3. Text uses the system font, so Hebrew and English both get Apple's faces.
+   4. Layout uses logical properties (inline-start/end), so it mirrors for RTL.
+   5. Motion is short and subtle, and is disabled for "reduce motion". */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---- color: labels (text) ---- */
+  --label: rgba(0, 0, 0, 0.85);
+  --label-secondary: rgba(0, 0, 0, 0.5);
+  --label-tertiary: rgba(0, 0, 0, 0.26);
+  --label-on-accent: #ffffff;
+
+  /* ---- color: surfaces ---- */
+  --surface-window: #ffffff;                    /* main content */
+  --surface-sidebar: rgba(246, 246, 246, 0.72); /* over window vibrancy */
+  --surface-sidebar-solid: #f0f0f0;             /* when there is no vibrancy */
+  --surface-control: #ffffff;                   /* text fields */
+  --fill: rgba(0, 0, 0, 0.05);                  /* hover, quiet backgrounds */
+  --fill-strong: rgba(0, 0, 0, 0.09);           /* pressed, inline code */
+  --bubble-agent: #e9e9eb;
+  --surface-card: rgba(255, 255, 255, 0.72);    /* grouped lists in the sidebar */
+  --fill-on-accent: rgba(255, 255, 255, 0.22);  /* quiet background on the accent color */
+  --separator: rgba(0, 0, 0, 0.1);
+
+  /* ---- color: system colors ---- */
+  --accent: #007aff;
+  --accent-pressed: #0062cc;
+  --focus-ring: rgba(0, 122, 255, 0.45);
+  --green: #34c759;
+  --red: #ff3b30;
+  --orange: #ff9500;
+  --purple: #af52de;
+  --gray: #8e8e93;
+
+  /* ---- typography ---- */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Hebrew", system-ui, "Segoe UI", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* macOS text styles: size / line height */
+  --text-large-title: 26px;  --lh-large-title: 32px;
+  --text-title-1: 22px;      --lh-title-1: 26px;
+  --text-title-2: 17px;      --lh-title-2: 22px;
+  --text-title-3: 15px;      --lh-title-3: 20px;
+  --text-body: 13px;         --lh-body: 16px;
+  --text-callout: 12px;      --lh-callout: 15px;
+  --text-subheadline: 11px;  --lh-subheadline: 14px;
+  --text-footnote: 10px;     --lh-footnote: 13px;
+  /* Conversation text is read, not scanned, so it uses the Title 3 size
+     with a looser line height. */
+  --text-message: 15px;      --lh-message: 22px;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* ---- spacing: 4-point steps on an 8-point grid ---- */
+  --space-half: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---- shape ---- */
+  --radius-small: 6px;    /* buttons, inline code */
+  --radius-icon: 7px;     /* square icon badges, like System Settings */
+  --radius-medium: 10px;  /* rows, cards, code blocks */
+  --radius-large: 18px;   /* message bubbles, the message field */
+  --radius-full: 999px;
+
+  /* ---- layout ---- */
+  --toolbar-height: 52px;
+  --sidebar-width: 320px;
+  --content-width: 720px;
+  --control-size: 28px;       /* round icon buttons */
+  --dot-size: 7px;            /* status dots */
+  --icon-size: 16px;          /* icons inside badges */
+  --badge-size: 28px;         /* square icon badges in lists */
+  --row-height: 44px;         /* the least height of a list row */
+  --orb-size: 72px;           /* the agent's mark on the empty screen */
+  --tint: 16%;                /* how much of a color goes into its soft background */
+  --focus-width: 3px;         /* focus ring thickness */
+  --field-max-height: 176px;  /* the message field grows up to 8 lines */
+
+  /* ---- elevation ---- */
+  --shadow-control: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+
+  /* ---- motion ---- */
+  --duration-fast: 120ms;
+  --duration: 220ms;
+  --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --label: rgba(255, 255, 255, 0.85);
+    --label-secondary: rgba(255, 255, 255, 0.55);
+    --label-tertiary: rgba(255, 255, 255, 0.25);
+
+    --surface-window: #1e1e1e;
+    --surface-sidebar: rgba(40, 40, 40, 0.6);
+    --surface-sidebar-solid: #2a2a2a;
+    --surface-control: rgba(255, 255, 255, 0.06);
+    --fill: rgba(255, 255, 255, 0.07);
+    --fill-strong: rgba(255, 255, 255, 0.12);
+    --bubble-agent: #3a3a3c;
+    --surface-card: rgba(255, 255, 255, 0.06);
+    --separator: rgba(255, 255, 255, 0.1);
+
+    --accent: #0a84ff;
+    --accent-pressed: #0070e0;
+    --focus-ring: rgba(10, 132, 255, 0.5);
+    --green: #30d158;
+    --red: #ff453a;
+    --orange: #ff9f0a;
+    --purple: #bf5af2;
+    --gray: #98989d;
+
+    --shadow-control: 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --duration-fast: 0ms; --duration: 0ms; }
+}

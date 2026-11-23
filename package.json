@@ -1,0 +1,28 @@
+{
+  "name": "my-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
+  "scripts": {
+    "start": "tsc -p tsconfig.build.json && electron .",
+    "web": "tsx --env-file=.env src/entries/web.ts",
+    "chat": "tsx --env-file=.env src/entries/terminal.ts",
+    "setup": "node node_modules/electron/install.js",
+    "typecheck": "tsc --noEmit",
+    "connect-google": "tsx src/entries/connect-google.ts",
+    "test": "tsx --test --test-force-exit tests/*.test.ts"
+  },
+  "dependencies": {
+    "openai": "^7.62.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "electron": "^45.4.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.0"
+  },
+  "main": "dist/entries/desktop.js"
+}

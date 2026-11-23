@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>האייג'נט שלי</title>
+<!-- Every color, size and spacing below comes from tokens.css. -->
+<link rel="stylesheet" href="/tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: var(--weight-regular) var(--text-body)/var(--lh-body) var(--font);
+    color: var(--label);
+    background: var(--surface-sidebar-solid);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--sidebar-width);
+    -webkit-font-smoothing: antialiased;
+    cursor: default;
+    user-select: none;
+  }
+  /* Inside the desktop app the window itself is translucent. */
+  .desktop body { background: transparent; }
+  ::selection { background: var(--focus-ring); }
+  :focus-visible { outline: var(--focus-width) solid var(--focus-ring); outline-offset: 1px; }
+  svg { width: var(--icon-size); height: var(--icon-size); flex: none; }
+
+  /* ---------- shared pieces ---------- */
+  .toolbar {
+    height: var(--toolbar-height); flex: none;
+    display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+    padding-inline: var(--space-5);
+    -webkit-app-region: drag;   /* the toolbar moves the window */
+  }
+  .toolbar h1 { margin: 0; font-size: var(--text-body); line-height: var(--lh-body); font-weight: var(--weight-semibold); }
+  .button {
+    font: inherit; color: var(--label); cursor: default;
+    background: transparent; border: 0; border-radius: var(--radius-small);
+    padding: var(--space-1) var(--space-2);
+    transition: background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
+    -webkit-app-region: no-drag;
+  }
+  .button:hover { background: var(--fill); }
+  .button:active { background: var(--fill-strong); }
+  .icon-button { display: grid; place-items: center; width: var(--control-size); height: var(--control-size); padding: 0; color: var(--label-secondary); }
+  .icon-button:hover { color: var(--label); }
+  .pill {
+    flex: none; padding: 1px var(--space-2); border-radius: var(--radius-full);
+    font-size: var(--text-subheadline); line-height: var(--lh-body); font-weight: var(--weight-medium);
+    color: var(--pill-color); background: color-mix(in srgb, var(--pill-color) var(--tint), transparent);
+  }
+  .pill.accent { --pill-color: var(--accent); }
+  .pill.green { --pill-color: var(--green); }
+  .pill.orange { --pill-color: var(--orange); }
+  .pill.quiet { --pill-color: var(--label-secondary); }
+
+  /* ---------- chat column ---------- */
+  .chat { display: flex; flex-direction: column; min-width: 0; height: 100vh; background: var(--surface-window); }
+  .chat .toolbar { border-bottom: 1px solid var(--separator); }
+  .messages { flex: 1; overflow-y: auto; padding: var(--space-6) var(--space-5); }
+  .thread { max-width: var(--content-width); margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-2); min-height: 100%; }
+
+  /* The first screen: the agent's mark, a greeting and a few things to try. */
+  .welcome { margin: auto; display: flex; flex-direction: column; align-items: center; gap: var(--space-3); text-align: center; padding-bottom: var(--space-8); }
+  .orb {
+    width: var(--orb-size); height: var(--orb-size); border-radius: var(--radius-full);
+    background: color-mix(in srgb, var(--accent) var(--tint), transparent);
+    display: grid; place-items: center; margin-bottom: var(--space-2);
+  }
+  .orb::after {
+    content: ""; width: 44%; height: 44%; border-radius: var(--radius-full); background: var(--accent);
+    animation: breathe 3.2s var(--ease) infinite;
+  }
+  @keyframes breathe { 50% { transform: scale(1.14); opacity: 0.85; } }
+  .welcome h2 { margin: 0; font-size: var(--text-title-1); line-height: var(--lh-title-1); font-weight: var(--weight-semibold); }
+  .welcome p { margin: 0; color: var(--label-secondary); font-size: var(--text-title-3); line-height: var(--lh-title-3); }
+  .suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); margin-top: var(--space-3); }
+  .suggestions .button {
+    padding: var(--space-2) var(--space-3); border-radius: var(--radius-full);
+    background: var(--fill); font-size: var(--text-body);
+  }
+  .suggestions .button:hover { background: var(--fill-strong); }
+
+  .message {
+    max-width: 78%;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-large);
+    font-size: var(--text-message); line-height: var(--lh-message);
+    user-select: text; cursor: text;
+    animation: appear var(--duration) var(--ease);
+  }
+  .message.agent { align-self: flex-start; background: var(--bubble-agent); }
+  .message.user  { align-self: flex-end; background: var(--accent); color: var(--label-on-accent); }
+  .message.user + .message.agent, .message.agent + .message.user { margin-top: var(--space-2); }
+  .message.error { background: transparent; color: var(--red); padding-inline: 0; }
+  @keyframes appear { from { opacity: 0; transform: translateY(var(--space-1)); } }
+
+  /* A sensitive action waiting for a yes or a no. */
+  .approval {
+    align-self: flex-start; max-width: 78%;
+    display: flex; flex-direction: column; gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-large);
+    background: var(--surface-control); box-shadow: var(--shadow-control);
+    font-size: var(--text-message); line-height: var(--lh-message);
+    animation: appear var(--duration) var(--ease);
+  }
+  .approval-label { font-size: var(--text-callout); line-height: var(--lh-callout); font-weight: var(--weight-semibold); color: var(--label-secondary); }
+  .approval-actions { display: flex; gap: var(--space-2); }
+  .approval .button { padding: var(--space-1) var(--space-4); font-weight: var(--weight-medium); background: var(--fill-strong); }
+  .approval .button.primary { background: var(--accent); color: var(--label-on-accent); }
+  .approval .button.primary:active { background: var(--accent-pressed); }
+  .approval-status { font-size: var(--text-callout); line-height: var(--lh-callout); color: var(--label-secondary); }
+
+  /* The direction rules. Every line decides its own direction from its first
+     real letter: Hebrew lines run right to left, English lines left to right.
+     Inside a line, the browser orders mixed Hebrew and English correctly. */
+  .line { margin: 0; text-align: start; unicode-bidi: plaintext; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .line:empty { height: var(--space-2); }
+  code, pre { font-family: var(--font-mono); font-size: var(--text-body); direction: ltr; unicode-bidi: isolate; }
+  code { background: var(--fill-strong); border-radius: var(--radius-small); padding: 1px var(--space-1); }
+  .message.user code { background: var(--fill-on-accent); }
+  pre.block {
+    text-align: left; background: var(--surface-window); color: var(--label);
+    border-radius: var(--radius-medium); padding: var(--space-3);
+    margin: var(--space-2) 0; overflow-x: auto; white-space: pre; line-height: var(--lh-title-3);
+  }
+  .message a { color: var(--accent); text-decoration: none; font-weight: var(--weight-medium); overflow-wrap: anywhere; cursor: pointer; }
+  .message a:hover { text-decoration: underline; }
+  .message.user a { color: inherit; text-decoration: underline; }
+
+  /* "Thinking": three soft dots inside an agent bubble. */
+  .typing { display: flex; gap: var(--space-1); align-items: center; height: var(--lh-message); padding-inline: var(--space-1); }
+  .typing span {
+    width: var(--dot-size); height: var(--dot-size); border-radius: var(--radius-full); background: var(--label-tertiary);
+    animation: pulse 1.2s var(--ease) infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: 0.15s; }
+  .typing span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes pulse { 0%, 60%, 100% { opacity: 0.35; } 30% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .typing span, .message, .approval, .row, .orb::after { animation: none; } }
+
+  /* ---------- message field ---------- */
+  form { padding: var(--space-2) var(--space-5) var(--space-5); }
+  .composer {
+    max-width: var(--content-width); margin: 0 auto;
+    display: flex; gap: var(--space-2); align-items: flex-end;
+    background: var(--surface-control);
+    border-radius: var(--radius-large);
+    box-shadow: var(--shadow-control);
+    padding: var(--space-1);
+    padding-inline-start: var(--space-3);
+    transition: box-shadow var(--duration-fast) var(--ease);
+  }
+  .composer:focus-within { box-shadow: 0 0 0 var(--focus-width) var(--focus-ring), var(--shadow-control); }
+  textarea {
+    flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: inherit;
+    font: inherit; font-size: var(--text-message); line-height: var(--lh-message);
+    max-height: var(--field-max-height); padding: 3px 0; margin: 0;
+    text-align: start; unicode-bidi: plaintext; cursor: text;
+  }
+  textarea:focus-visible { outline: none; }  /* the field around it shows the focus ring */
+  textarea::placeholder { color: var(--label-tertiary); }
+  .send {
+    flex: none; width: var(--control-size); height: var(--control-size); padding: 0; border: 0; cursor: default;
+    border-radius: var(--radius-full); background: var(--accent); color: var(--label-on-accent);
+    display: grid; place-items: center;
+    transition: background var(--duration-fast) var(--ease), opacity var(--duration-fast) var(--ease), transform var(--duration-fast) var(--ease);
+  }
+  .send:active { background: var(--accent-pressed); transform: scale(0.94); }
+  .send:disabled { opacity: 0.3; }
+
+  /* ---------- sidebar ----------
+     Built like System Settings: titled groups, each a rounded card of rows.
+     A row is: a square colored icon, a title with an optional second line,
+     and something at the far end (a status, a time, a small button). */
+  aside {
+    height: 100vh; display: flex; flex-direction: column; min-width: 0;
+    background: var(--surface-sidebar-solid);
+    border-inline-start: 1px solid var(--separator);
+  }
+  .desktop aside { background: var(--surface-sidebar); }
+  .sidebar-scroll { flex: 1; overflow-y: auto; padding: 0 var(--space-3) var(--space-5); }
+
+  .group-title {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin: var(--space-5) var(--space-2) var(--space-2);
+    font-size: var(--text-subheadline); line-height: var(--lh-subheadline);
+    font-weight: var(--weight-semibold); color: var(--label-secondary);
+  }
+  .group-title:first-child { margin-top: var(--space-1); }
+  .group-title span { font-weight: var(--weight-regular); color: var(--label-tertiary); }
+  .card { background: var(--surface-card); border-radius: var(--radius-medium); overflow: hidden; }
+
+  .row {
+    position: relative; display: flex; align-items: center; gap: var(--space-3);
+    padding: var(--space-2) var(--space-3); min-height: var(--row-height);
+    animation: appear var(--duration) var(--ease);
+  }
+  /* The hairline between rows starts after the icon, as in macOS lists. */
+  .row + .row::before, .row + details.row-details::before, details.row-details + details.row-details::before, details.row-details + .row::before {
+    content: ""; position: absolute; inset-block-start: 0; inset-inline: calc(var(--space-3) + var(--badge-size) + var(--space-3)) 0;
+    border-top: 1px solid var(--separator);
+  }
+  .row.no-icon + .row.no-icon::before { inset-inline-start: var(--space-3); }
+  .row.action { position: relative; }
+  .row.action::before {
+    content: ""; position: absolute; inset-block-start: 0; inset-inline: calc(var(--space-3) + var(--badge-size) + var(--space-3)) 0;
+    border-top: 1px solid var(--separator);
+  }
+  .row-text { flex: 1; min-width: 0; }
+  .row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--weight-medium); }
+  .row-title.address { direction: ltr; text-align: right; unicode-bidi: isolate; user-select: text; }
+  .row-sub { margin-top: 1px; color: var(--label-secondary); font-size: var(--text-subheadline); line-height: var(--lh-subheadline); }
+  .row-sub.problem { color: var(--orange); }
+  .row .button { flex: none; font-size: var(--text-callout); color: var(--accent); }
+  .row .quiet-action { color: var(--label-secondary); opacity: 0; }
+  .row:hover .quiet-action, .row .quiet-action:focus-visible { opacity: 1; }
+  .row.action { color: var(--accent); cursor: default; width: 100%; border: 0; background: transparent; font: inherit; text-align: start; }
+  .row.action:hover { background: var(--fill); }
+  .row.action:disabled { color: var(--label-secondary); background: transparent; }
+  .row.empty { color: var(--label-secondary); font-size: var(--text-callout); line-height: var(--lh-body); }
+
+  /* The square icon at the start of a row. */
+  .badge {
+    position: relative; flex: none; display: grid; place-items: center;
+    width: var(--badge-size); height: var(--badge-size); border-radius: var(--radius-icon);
+    background: var(--badge-color); color: var(--label-on-accent);
+  }
+  .badge.blue { --badge-color: var(--accent); }
+  .badge.orange { --badge-color: var(--orange); }
+  .badge.purple { --badge-color: var(--purple); }
+  .badge.green { --badge-color: var(--green); }
+  .badge.red { --badge-color: var(--red); }
+  .badge.gray { --badge-color: var(--gray); }
+  .badge.soft { background: color-mix(in srgb, var(--badge-color) var(--tint), transparent); color: var(--badge-color); }
+
+  /* waiting for a sign-in to finish in the browser */
+  .connecting { padding: var(--space-3); border-top: 1px solid var(--separator); }
+  .connecting p { margin: 0 0 var(--space-2); color: var(--label-secondary); font-size: var(--text-callout); line-height: var(--lh-body); }
+  .connecting-actions { display: flex; gap: var(--space-1); flex-wrap: wrap; }
+  .connecting-actions .button { background: var(--fill); font-size: var(--text-callout); }
+  .connecting-actions .button:hover { background: var(--fill-strong); }
+  .notice { margin: var(--space-2) var(--space-2) 0; color: var(--red); font-size: var(--text-callout); line-height: var(--lh-body); }
+
+  /* memory rows: free text, so they wrap */
+  .row.memory { align-items: flex-start; min-height: 0; }
+  .row.memory .row-title { white-space: normal; overflow-wrap: anywhere; font-weight: var(--weight-regular); user-select: text; line-height: var(--lh-title-3); }
+  .row.memory .icon-button { width: var(--lh-title-3); height: var(--lh-title-3); }
+  .row.memory .icon-button:hover { color: var(--red); }
+
+  /* activity rows open to show the technical details */
+  details.row-details { position: relative; }
+  details.row-details summary { list-style: none; cursor: default; }
+  details.row-details summary::-webkit-details-marker { display: none; }
+  details.row-details summary:hover { background: var(--fill); }
+  details.row-details .row { animation: none; }
+  .time { flex: none; color: var(--label-tertiary); font-size: var(--text-subheadline); font-variant-numeric: tabular-nums; }
+  details.row-details pre {
+    margin: 0; padding: 0 var(--space-3) var(--space-3);
+    font-size: var(--text-subheadline); line-height: var(--lh-body); color: var(--label-secondary);
+    white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; user-select: text; cursor: text;
+  }
+
+  @media (max-width: 780px) {
+    body { grid-template-columns: 1fr; }
+    aside { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<main class="chat">
+  <header class="toolbar">
+    <h1>האייג'נט שלי</h1>
+    <button class="button icon-button" id="reset" type="button" title="שיחה חדשה" aria-label="שיחה חדשה"></button>
+  </header>
+
+  <div class="messages" id="messages">
+    <div class="thread" id="thread"></div>
+  </div>
+
+  <form id="form">
+    <div class="composer">
+      <textarea id="input" rows="1" dir="auto" placeholder="הודעה" aria-label="הודעה" autofocus></textarea>
+      <button class="send" id="send" type="submit" aria-label="שלח" disabled></button>
+    </div>
+  </form>
+</main>
+
+<aside aria-label="חשבונות, זיכרון ופעילות">
+  <header class="toolbar"></header>
+  <div class="sidebar-scroll">
+    <h2 class="group-title">חשבונות</h2>
+    <div class="card">
+      <div id="accounts"></div>
+      <button class="row action" id="connect" type="button" hidden></button>
+      <div class="connecting" id="connecting" hidden>
+        <p>ממתין לאישור בדפדפן. אם הדף נסגר או נפתח בפרופיל הלא נכון, אפשר לפתוח שוב או להעתיק את הקישור לדפדפן אחר.</p>
+        <div class="connecting-actions">
+          <button class="button" id="connect-open" type="button">פתח שוב</button>
+          <button class="button" id="connect-copy" type="button">העתק קישור</button>
+          <button class="button" id="connect-cancel" type="button">בטל</button>
+        </div>
+      </div>
+    </div>
+    <p class="notice" id="connect-error" hidden></p>
+
+    <h2 class="group-title">שירותים</h2>
+    <div class="card" id="services"></div>
+
+    <h2 class="group-title">זיכרון <span id="memory-count"></span></h2>
+    <div class="card" id="memory"></div>
+
+    <h2 class="group-title">פעילות</h2>
+    <div class="card" id="calls"></div>
+  </div>
+</aside>
+
+<script>
+  // Inside the desktop app the window is translucent, so the styles differ a little.
+  if (navigator.userAgent.includes("Electron")) document.documentElement.classList.add("desktop");
+
+  // ---- icons: simple line shapes, drawn here, in the color of whatever holds them ----
+  const svg = (paths) =>
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
+  const ICONS = {
+    person: svg('<circle cx="8" cy="5.4" r="2.6"/><path d="M2.9 13.6c.5-2.5 2.5-3.9 5.1-3.9s4.6 1.4 5.1 3.9"/>'),
+    briefcase: svg('<rect x="2.2" y="4.8" width="11.6" height="8.4" rx="1.8"/><path d="M5.9 4.8V3.9c0-.8.6-1.4 1.4-1.4h1.4c.8 0 1.4.6 1.4 1.4v.9M2.2 8.6h11.6"/>'),
+    video: svg('<rect x="1.8" y="4.2" width="8.6" height="7.6" rx="1.8"/><path d="m10.4 7 3.8-2.1v6.2L10.4 9"/>'),
+    plus: svg('<path d="M8 3.2v9.6M3.2 8h9.6"/>'),
+    close: svg('<path d="m4.2 4.2 7.6 7.6M11.8 4.2l-7.6 7.6"/>'),
+    check: svg('<path d="m3.4 8.4 3 3 6.2-6.6"/>'),
+    arrowUp: svg('<path d="M8 13V3M3.6 7.4 8 3l4.4 4.4"/>'),
+    compose: svg('<path d="M13.2 8.6v3.2a1.8 1.8 0 0 1-1.8 1.8H4.2a1.8 1.8 0 0 1-1.8-1.8V4.6a1.8 1.8 0 0 1 1.8-1.8h3.2"/><path d="m10.9 2.4 2.7 2.7-5 5-3 .4.4-3z"/>'),
+    clock: svg('<circle cx="8" cy="8" r="5.6"/><path d="M8 4.8V8l2.2 1.4"/>'),
+    calendar: svg('<rect x="2.4" y="3.4" width="11.2" height="10" rx="1.8"/><path d="M2.4 6.8h11.2M5.4 2v2.6M10.6 2v2.6"/>'),
+    people: svg('<circle cx="6" cy="5.6" r="2.2"/><path d="M1.8 13c.4-2.2 2-3.4 4.2-3.4s3.8 1.2 4.2 3.4"/><path d="M10.6 3.6a2.2 2.2 0 0 1 0 4.2M12 9.9c1.2.4 2 1.4 2.3 3"/>'),
+    room: svg('<path d="M3.6 13.6V3.4c0-.6.4-1 1-1h6.8c.6 0 1 .4 1 1v10.2M2 13.6h12"/><path d="M9.6 8.2v.2"/>'),
+    mail: svg('<rect x="2" y="3.6" width="12" height="8.8" rx="1.8"/><path d="m2.6 5 5.4 4 5.4-4"/>'),
+    draft: svg('<path d="m10.6 2.6 2.8 2.8-7.2 7.2-3.4.6.6-3.4z"/>'),
+    memory: svg('<path d="M4.4 2.4h7.2c.5 0 .8.3.8.8v10.2L8 10.6l-4.4 2.8V3.2c0-.5.3-.8.8-.8z"/>'),
+    tool: svg('<circle cx="8" cy="8" r="1.4"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6M3.9 3.9 5 5M11 11l1.1 1.1M3.9 12.1 5 11M11 5l1.1-1.1"/>'),
+  };
+  document.getElementById("reset").innerHTML = ICONS.compose;
+  document.getElementById("send").innerHTML = ICONS.arrowUp;
+
+  // What each tool is called in the activity list, in plain words.
+  const TOOLS = {
+    get_current_time: { label: "בדק את השעה", icon: "clock", color: "gray" },
+    get_calendar_events: { label: "קרא את היומן", icon: "calendar", color: "blue" },
+    create_calendar_event: { label: "יצר אירוע ביומן", icon: "calendar", color: "green" },
+    find_people: { label: "חיפש אנשים", icon: "people", color: "blue" },
+    find_free_rooms: { label: "חיפש חדר פנוי", icon: "room", color: "orange" },
+    search_emails: { label: "חיפש במייל", icon: "mail", color: "blue" },
+    read_email: { label: "קרא מייל", icon: "mail", color: "blue" },
+    create_email_draft: { label: "שמר טיוטת מייל", icon: "draft", color: "green" },
+    remember: { label: "שמר בזיכרון", icon: "memory", color: "purple" },
+    forget: { label: "מחק מהזיכרון", icon: "memory", color: "gray" },
+  };
+
+  const thread = document.getElementById("thread");
+  const messages = document.getElementById("messages");
+  const calls = document.getElementById("calls");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+  const sendButton = document.getElementById("send");
+  let busy = false;
+
+  // ---- small builders, so every row in the sidebar is made the same way ----
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function badge(icon, color, soft) {
+    const node = element("span", "badge " + color + (soft ? " soft" : ""));
+    node.innerHTML = ICONS[icon];
+    return node;
+  }
+  function row({ icon, title, titleClass, sub, subClass, end }) {
+    const node = element("div", "row" + (icon ? "" : " no-icon"));
+    if (icon) node.append(icon);
+    const text = element("div", "row-text");
+    text.append(element("div", "row-title" + (titleClass ? " " + titleClass : ""), title));
+    if (sub) text.append(element("div", "row-sub" + (subClass ? " " + subClass : ""), sub));
+    node.append(text);
+    for (const item of end ?? []) node.append(item);
+    return node;
+  }
+  const emptyRow = (text) => element("div", "row no-icon empty", text);
+  const post = (path, body) =>
+    fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) }).then((r) => r.json());
+
+  // Adds text to a line, turning [label](address) and plain web addresses into links.
+  // Only http and https addresses become links; they open in the browser.
+  function appendWithLinks(line, text) {
+    const pattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"')\]]+)/g;
+    let last = 0;
+    for (const match of text.matchAll(pattern)) {
+      if (match.index > last) line.append(text.slice(last, match.index));
+      const link = document.createElement("a");
+      link.href = match[2] ?? match[3];
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      if (match[1]) {
+        link.textContent = match[1];
+      } else {
+        // A bare address is shown short, and always left to right.
+        const shown = match[3].replace(/^https?:\/\//, "");
+        link.textContent = shown.length > 42 ? shown.slice(0, 40) + "…" : shown;
+        link.dir = "ltr";
+      }
+      link.title = link.href;
+      line.append(link);
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) line.append(text.slice(last));
+  }
+
+  // Turns text into safe page elements. Each line becomes its own block so it
+  // can choose its own direction. `code` and ``` blocks always run left to right.
+  function render(text) {
+    const fragment = document.createDocumentFragment();
+    const parts = text.split(/```[^\n]*\n?([\s\S]*?)```/g);
+    parts.forEach((part, index) => {
+      if (index % 2 === 1) {
+        const pre = element("pre", "block", part.replace(/\n$/, ""));
+        fragment.append(pre);
+        return;
+      }
+      if (part.trim() === "") return;
+      for (const lineText of part.replace(/^\n+|\n+$/g, "").split("\n")) {
+        const line = element("p", "line");
+        line.dir = "auto";
+        lineText.split(/`([^`\n]+)`/g).forEach((piece, i) => {
+          if (i % 2 === 1) line.append(element("code", "", piece));
+          else if (piece) appendWithLinks(line, piece);
+        });
+        fragment.append(line);
+      }
+    });
+    return fragment;
+  }
+
+  function scrollToEnd() {
+    messages.scrollTo({ top: messages.scrollHeight, behavior: "smooth" });
+  }
+
+  // ---- the first screen ----
+  function showWelcome() {
+    const welcome = element("div", "welcome");
+    welcome.id = "welcome";
+    welcome.append(element("div", "orb"), element("h2", "", "מה נעשה היום?"), element("p", "", "אפשר לכתוב בעברית, באנגלית או בשתיהן יחד."));
+    const suggestions = element("div", "suggestions");
+    for (const text of ["מה יש לי היום ביומן?", "תקבע לי פגישה", "מה אתה זוכר עליי?"]) {
+      const chip = element("button", "button", text);
+      chip.type = "button";
+      chip.addEventListener("click", () => {
+        input.value = text;
+        form.requestSubmit();
+      });
+      suggestions.append(chip);
+    }
+    welcome.append(suggestions);
+    thread.replaceChildren(welcome);
+  }
+  showWelcome();
+
+  function addMessage(kind, text) {
+    document.getElementById("welcome")?.remove();
+    const node = element("div", "message " + kind);
+    if (text !== undefined) node.append(render(text));
+    thread.append(node);
+    scrollToEnd();
+    return node;
+  }
+
+  // ---- activity: what the agent did, in plain words; open a row for the details ----
+  function showNoActivity() {
+    calls.replaceChildren(emptyRow("כל פעולה שהאייג'נט מבצע תופיע כאן."));
+  }
+  showNoActivity();
+
+  function addToolCall(call) {
+    if (calls.querySelector(".empty")) calls.replaceChildren();
+    const known = TOOLS[call.tool] ?? { label: call.tool, icon: "tool", color: "gray" };
+    const declined = !call.ok && call.result && call.result.declined;
+    const time = element("span", "time", new Date().toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }));
+
+    const details = element("details", "row-details");
+    const summary = document.createElement("summary");
+    summary.append(
+      row({
+        icon: badge(call.ok ? known.icon : "close", call.ok ? known.color : declined ? "gray" : "red", true),
+        title: known.label,
+        sub: call.ok ? "" : declined ? "לא אושר" : "נכשל",
+        subClass: declined ? "" : "problem",
+        end: [time],
+      }),
+    );
+    const body = element("pre");
+    body.dir = "ltr";
+    body.textContent =
+      call.tool + "\n\nargs\n" + JSON.stringify(call.args, null, 2) +
+      "\n\nresult (" + call.ms + " ms)\n" + JSON.stringify(call.result, null, 2);
+    details.append(summary, body);
+    calls.prepend(details);
+    while (calls.children.length > 30) calls.lastElementChild.remove();
+  }
+
+  // Shows a sensitive action and sends the user's answer back to the server.
+  function addApproval(request, before) {
+    const card = element("div", "approval");
+    card.setAttribute("role", "group");
+    card.setAttribute("aria-label", "נדרש אישור");
+    const text = element("div");
+    text.append(render(request.summary));
+
+    const actions = element("div", "approval-actions");
+    const answer = async (approved) => {
+      actions.replaceWith(element("div", "approval-status", approved ? "אושר" : "בוטל"));
+      await post("/api/approve", { id: request.id, approved }).catch(() => {});
+    };
+    const yes = element("button", "button primary", "אשר");
+    yes.type = "button";
+    yes.addEventListener("click", () => answer(true));
+    const no = element("button", "button", "בטל");
+    no.type = "button";
+    no.addEventListener("click", () => answer(false));
+    actions.append(yes, no);
+
+    card.append(element("div", "approval-label", "נדרש אישור"), text, actions);
+    thread.insertBefore(card, before);
+    scrollToEnd();
+    yes.focus();
+  }
+
+  // ---- memory: everything the agent remembers, each with a delete button ----
+  const memoryList = document.getElementById("memory");
+  function showMemory(facts) {
+    document.getElementById("memory-count").textContent = facts.length ? String(facts.length) : "";
+    memoryList.replaceChildren();
+    for (const fact of facts) {
+      const remove = element("button", "button icon-button quiet-action");
+      remove.type = "button";
+      remove.innerHTML = ICONS.close;
+      remove.title = "מחק את הזיכרון הזה";
+      remove.setAttribute("aria-label", "מחק את הזיכרון: " + fact.text);
+      remove.addEventListener("click", async () => showMemory((await post("/api/memory/delete", { id: fact.id })).facts));
+      const node = row({ icon: badge("memory", "purple", true), title: fact.text, end: [remove] });
+      node.classList.add("memory");
+      memoryList.append(node);
+    }
+    if (facts.length === 0) memoryList.append(emptyRow("כשתספר לאייג'נט משהו שכדאי לזכור, זה יופיע כאן."));
+  }
+  async function loadMemory() {
+    try {
+      showMemory((await (await fetch("/api/memory")).json()).facts);
+    } catch {
+      // the memory list is not essential: leave it as it is
+    }
+  }
+  loadMemory();
+
+  // ---- connected accounts ----
+  const accountsList = document.getElementById("accounts");
+  const connectButton = document.getElementById("connect");
+  const connectingBox = document.getElementById("connecting");
+  const connectError = document.getElementById("connect-error");
+  connectButton.append(badge("plus", "blue", true), element("span", "", "הוסף חשבון Google"));
+
+  function abilities(account) {
+    const can = [];
+    if (account.calendarRead) can.push("יומן");
+    if (account.people) can.push("אנשים");
+    if (account.mailRead) can.push("מייל");
+    if (account.mailDrafts) can.push("טיוטות");
+    return can.join(" · ") || "אין הרשאות";
+  }
+
+  function showAccounts(accounts) {
+    accountsList.replaceChildren();
+    for (const account of accounts) {
+      // Addresses at public mail services are personal; a company's own domain is work.
+      const personal = /@(gmail|googlemail|outlook|hotmail|yahoo|icloud)\./i.test(account.email);
+      // An account connected before newer abilities were added needs to be connected again.
+      const outdated = !account.calendarCreate || !account.people || !account.mailRead;
+      const end = [];
+      if (account.isDefault) {
+        end.push(element("span", "pill accent", "ברירת מחדל"));
+      } else if (accounts.length > 1 && !outdated) {
+        const make = element("button", "button quiet-action", "קבע כברירת מחדל");
+        make.type = "button";
+        make.addEventListener("click", async () => {
+          const result = await post("/api/accounts/default", { email: account.email });
+          if (result.accounts) showAccounts(result.accounts);
+        });
+        end.push(make);
+      }
+      if (outdated && canConnect) {
+        const again = element("button", "button", "חבר מחדש");
+        again.type = "button";
+        again.addEventListener("click", async () => showConnecting(await post("/api/accounts/connect")));
+        end.push(again);
+      }
+      const node = row({
+        icon: badge(personal ? "person" : "briefcase", personal ? "blue" : "orange"),
+        title: account.email,
+        titleClass: "address",
+        sub: outdated ? "חסרות הרשאות חדשות" : abilities(account),
+        subClass: outdated ? "problem" : "",
+        end,
+      });
+      node.title = account.email + " · " + (personal ? "חשבון אישי" : "חשבון עבודה") + " · " + abilities(account);
+      accountsList.append(node);
+    }
+    if (accounts.length === 0) accountsList.append(emptyRow("עדיין לא חובר חשבון."));
+  }
+
+  // Zoom: one row that shows whether it is connected, with a way to connect it.
+  function showZoom(zoom) {
+    const end = [];
+    if (zoom.connected) {
+      end.push(element("span", "pill green", "מחובר"));
+    } else if (zoom.configured && canConnect) {
+      const connect = element("button", "button", "חבר");
+      connect.type = "button";
+      connect.addEventListener("click", async () => showConnecting(await post("/api/accounts/connect", { service: "zoom" })));
+      end.push(connect);
+    } else {
+      end.push(element("span", "pill quiet", "לא מוגדר"));
+    }
+    document.getElementById("services").replaceChildren(
+      row({
+        icon: badge("video", zoom.connected ? "blue" : "gray", !zoom.connected),
+        title: "Zoom",
+        sub: zoom.connected ? (zoom.email ?? "פגישה חדשה לכל אירוע") : zoom.configured ? "לא מחובר" : "ממתין להרשאת מפתח ב-Zoom",
+        end,
+      }),
+    );
+  }
+
+  let canConnect = false;
+  async function loadAccounts() {
+    const result = await (await fetch("/api/accounts")).json();
+    canConnect = result.canConnect;
+    showAccounts(result.accounts);
+    showZoom(result.zoom);
+  }
+
+  // Shows where the sign-in stands, and keeps checking while it waits.
+  let connectUrl = "";
+  let pollTimer = 0;
+  async function showConnecting(status) {
+    clearTimeout(pollTimer);
+    const waiting = status.state === "waiting";
+    connectUrl = waiting ? status.url : "";
+    connectingBox.hidden = !waiting;
+    connectButton.hidden = waiting || !canConnect;
+    connectError.hidden = status.state !== "failed";
+    if (status.state === "failed") connectError.textContent = "החיבור לא הושלם: " + status.error;
+    if (status.state === "done") await loadAccounts();
+    if (waiting) {
+      pollTimer = setTimeout(async () => showConnecting(await (await fetch("/api/accounts/connect")).json()), 1000);
+    }
+  }
+
+  connectButton.addEventListener("click", async () => showConnecting(await post("/api/accounts/connect")));
+  document.getElementById("connect-open").addEventListener("click", () => post("/api/accounts/connect/open"));
+  document.getElementById("connect-cancel").addEventListener("click", async () => showConnecting(await post("/api/accounts/connect/cancel")));
+  document.getElementById("connect-copy").addEventListener("click", async (event) => {
+    await navigator.clipboard.writeText(connectUrl);
+    event.target.textContent = "הועתק";
+    setTimeout(() => (event.target.textContent = "העתק קישור"), 1500);
+  });
+
+  loadAccounts().then(async () => showConnecting(await (await fetch("/api/accounts/connect")).json()));
+
+  // ---- the message field ----
+  function refreshInput() {
+    input.style.height = "auto";
+    input.style.height = input.scrollHeight + "px";
+    sendButton.disabled = busy || input.value.trim() === "";
+  }
+  input.addEventListener("input", refreshInput);
+
+  // Enter sends, Shift+Enter adds a new line.
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text || busy) return;
+
+    addMessage("user", text);
+    input.value = "";
+    busy = true;
+    refreshInput();
+
+    const pending = addMessage("agent");
+    pending.setAttribute("aria-label", "חושב");
+    pending.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+
+    const show = (kind, content) => {
+      pending.className = "message " + kind;
+      pending.removeAttribute("aria-label");
+      pending.replaceChildren(render(content));
+      scrollToEnd();
+    };
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok || !response.body) throw new Error("השרת החזיר שגיאה " + response.status);
+
+      // Read the stream line by line: tool calls first, then the reply.
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+      let finished = false;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line) continue;
+          const eventData = JSON.parse(line);
+          if (eventData.type === "tool") {
+            addToolCall(eventData);
+            if (eventData.tool === "remember" || eventData.tool === "forget") loadMemory();
+          }
+          if (eventData.type === "approval") addApproval(eventData, pending);
+          if (eventData.type === "reply") { show("agent", eventData.text); finished = true; }
+          if (eventData.type === "error") { show("agent error", eventData.message); finished = true; }
+        }
+      }
+      if (!finished) show("agent error", "החיבור נסגר לפני שהגיעה תשובה.");
+    } catch (error) {
+      show("agent error", "לא הצלחתי להגיע לשרת: " + error.message);
+    } finally {
+      busy = false;
+      refreshInput();
+      input.focus();
+    }
+  });
+
+  document.getElementById("reset").addEventListener("click", async () => {
+    await fetch("/api/reset", { method: "POST" });
+    showWelcome();
+    input.focus();
+  });
+</script>
+</body>
+</html>
