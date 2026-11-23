@@ -5,7 +5,8 @@ import OpenAI from "openai";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { config } from "./config.js";
 import { buildInstructions } from "./prompt.js";
-import { logToolCall } from "./log.js";
+import { runTool } from "./run-tool.js";
+import type { TurnHandlers } from "./run-tool.js";
 import { tools } from "./tools/index.js";
 import type { Tool } from "./tools/types.js";
 
@@ -13,17 +14,7 @@ import type { Tool } from "./tools/types.js";
 // but never forever.
 const MAX_STEPS = 8;
 
-// Called whenever a tool runs, so an entry (terminal, GUI) can show it.
-export type ToolCallEvent = { tool: string; args: unknown; ok: boolean; result: unknown; ms: number };
-export type ToolCallListener = (call: ToolCallEvent) => void;
-
-// How an entry lets the user approve a sensitive action. It shows the summary,
-// waits for the answer, and resolves to true (approved) or false (declined).
-export type ApprovalRequest = { tool: string; summary: string; args: unknown };
-export type Approver = (request: ApprovalRequest) => Promise<boolean>;
-
-// What an entry can hook into during one turn.
-export type TurnHandlers = { onToolCall?: ToolCallListener; approve?: Approver };
+export type { ApprovalRequest, Approver, ToolCallEvent, ToolCallListener, TurnHandlers } from "./run-tool.js";
 
 export class Agent {
   private client: OpenAI;
@@ -72,7 +63,7 @@ export class Agent {
       }
 
       for (const request of toolRequests) {
-        const result = await this.runTool(request.name, request.arguments, handlers);
+        const result = await runTool(this.tools, request.name, request.arguments, handlers);
         this.history.push({
           type: "function_call_output",
           call_id: request.call_id,
@@ -82,46 +73,5 @@ export class Agent {
     }
 
     return "עצרתי: יותר מדי קריאות לכלים ברצף.";
-  }
-
-  // Runs one tool. Never throws: an error is returned to the model as a result,
-  // so it can tell the user what went wrong instead of crashing the conversation.
-  private async runTool(name: string, rawArgs: string, handlers: TurnHandlers): Promise<unknown> {
-    const started = Date.now();
-    let args: unknown = rawArgs;
-    let ok = false;
-    let result: unknown;
-
-    try {
-      const tool = this.tools.find((candidate) => candidate.name === name);
-      if (!tool) throw new Error(`Unknown tool: ${name}`);
-      args = JSON.parse(rawArgs || "{}");
-      let toolArgs = args as Record<string, unknown>;
-      if (tool.prepare) {
-        toolArgs = await tool.prepare(toolArgs);
-        args = toolArgs; // log and show what will really run
-      }
-
-      if (tool.needsApproval && !(await this.isApproved(tool, toolArgs, handlers.approve))) {
-        result = { declined: true, message: "The user did not approve this action. Do not try again unless the user asks." };
-      } else {
-        result = await tool.run(toolArgs);
-        ok = true;
-      }
-    } catch (error) {
-      result = { error: error instanceof Error ? error.message : String(error) };
-    }
-
-    const event = { tool: name, args, ok, result, ms: Date.now() - started };
-    await logToolCall(event);
-    handlers.onToolCall?.(event);
-    return result;
-  }
-
-  // The permission gate. With no way to ask the user, the answer is always no.
-  private async isApproved(tool: Tool, args: Record<string, unknown>, approve?: Approver): Promise<boolean> {
-    if (!approve) return false;
-    const summary = tool.describe ? tool.describe(args) : `להפעיל את ${tool.name}`;
-    return approve({ tool: tool.name, summary, args });
   }
 }

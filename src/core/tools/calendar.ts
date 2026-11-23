@@ -145,7 +145,7 @@ export const createCalendarEvent: Tool = {
     if (args.room_email) {
       const wanted = String(args.room_email).trim().toLowerCase();
       room = (await listRooms(account)).rooms.find((candidate) => candidate.email === wanted) ?? null;
-      if (!room) throw new Error("room_email is not a known meeting room. Use find_free_rooms to choose one.");
+      if (!room) throw new Error("room_email is not one of the rooms in the user's country. Use find_free_rooms to choose one.");
     }
 
     // Zoom must be ready before we ask for approval, not after.
@@ -178,7 +178,10 @@ export const createCalendarEvent: Tool = {
     const email = await resolveAccount(args.account);
     const people = ((args.attendees as string[] | undefined) ?? []).map((address) => ({ email: address }));
     const room = args.room_email ? [{ email: String(args.room_email), resource: true }] : [];
-    const invited = [...people, ...room];
+    // The user himself is always on the guest list, already accepted. Without this,
+    // Google shows only the other people, and the user is missing from his own meeting.
+    const me = people.length + room.length > 0 ? [{ email, responseStatus: "accepted" }] : [];
+    const invited = [...me, ...people, ...room];
 
     const url = new URL(EVENTS_URL);
     // "all": Google emails an invitation to everyone invited.

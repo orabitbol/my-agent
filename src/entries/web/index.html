@@ -171,6 +171,30 @@
   .send:active { background: var(--accent-pressed); transform: scale(0.94); }
   .send:disabled { opacity: 0.3; }
 
+  /* ---------- voice ----------
+     While a spoken conversation is on, the message field becomes a status bar:
+     a small orb that shows what the agent is doing, a line of text, and Stop. */
+  .mic { flex: none; width: var(--control-size); height: var(--control-size); padding: 0; border-radius: var(--radius-full); display: grid; place-items: center; color: var(--label-secondary); }
+  .mic:hover { color: var(--label); }
+  .voice-bar { flex: 1; display: flex; align-items: center; gap: var(--space-3); min-height: var(--control-size); }
+  .voice-status { flex: 1; font-size: var(--text-message); line-height: var(--lh-message); color: var(--label-secondary); }
+  .voice-orb {
+    flex: none; width: var(--icon-size); height: var(--icon-size); border-radius: var(--radius-full);
+    background: var(--orb-color, var(--gray)); transition: background var(--duration) var(--ease);
+  }
+  .voice-bar[data-state="listening"] .voice-orb { --orb-color: var(--accent); animation: breathe 3.2s var(--ease) infinite; }
+  .voice-bar[data-state="hearing"] .voice-orb { --orb-color: var(--green); animation: breathe 0.7s var(--ease) infinite; }
+  .voice-bar[data-state="thinking"] .voice-orb { --orb-color: var(--purple); animation: pulse 1.2s var(--ease) infinite; }
+  .voice-bar[data-state="speaking"] .voice-orb { --orb-color: var(--accent); animation: breathe 0.5s var(--ease) infinite; }
+  .voice-bar[data-state="approval"] .voice-orb { --orb-color: var(--orange); }
+  .voice-bar[data-state="muted"] .voice-orb { --orb-color: var(--gray); }
+  .voice-mode { flex: none; font-size: var(--text-callout); color: var(--label-secondary); background: var(--fill); }
+  .voice-mode:hover { background: var(--fill-strong); color: var(--label); }
+  .stop { background: var(--red); }
+  .stop:active { background: var(--red); }
+  .note { align-self: center; margin: var(--space-2) 0; color: var(--label-secondary); font-size: var(--text-callout); line-height: var(--lh-body); text-align: center; }
+  @media (prefers-reduced-motion: reduce) { .voice-orb { animation: none !important; } }
+
   /* ---------- sidebar ----------
      Built like System Settings: titled groups, each a rounded card of rows.
      A row is: a square colored icon, a title with an optional second line,
@@ -284,7 +308,14 @@
   <form id="form">
     <div class="composer">
       <textarea id="input" rows="1" dir="auto" placeholder="הודעה" aria-label="הודעה" autofocus></textarea>
+      <button class="button mic" id="mic" type="button" title="שיחה קולית" aria-label="התחל שיחה קולית"></button>
       <button class="send" id="send" type="submit" aria-label="שלח" disabled></button>
+      <div class="voice-bar" id="voice-bar" data-state="connecting" role="status" hidden>
+        <span class="voice-orb"></span>
+        <span class="voice-status" id="voice-status"></span>
+        <button class="button voice-mode" id="voice-mode" type="button"></button>
+        <button class="send stop" id="voice-stop" type="button" title="סיים שיחה קולית" aria-label="סיים שיחה קולית"></button>
+      </div>
     </div>
   </form>
 </main>
@@ -341,10 +372,14 @@
     mail: svg('<rect x="2" y="3.6" width="12" height="8.8" rx="1.8"/><path d="m2.6 5 5.4 4 5.4-4"/>'),
     draft: svg('<path d="m10.6 2.6 2.8 2.8-7.2 7.2-3.4.6.6-3.4z"/>'),
     memory: svg('<path d="M4.4 2.4h7.2c.5 0 .8.3.8.8v10.2L8 10.6l-4.4 2.8V3.2c0-.5.3-.8.8-.8z"/>'),
+    mic: svg('<rect x="5.6" y="1.8" width="4.8" height="7.6" rx="2.4"/><path d="M3.4 7.6a4.6 4.6 0 0 0 9.2 0M8 12.2v2"/>'),
+    stop: svg('<rect x="4.6" y="4.6" width="6.8" height="6.8" rx="1.2" fill="currentColor"/>'),
     tool: svg('<circle cx="8" cy="8" r="1.4"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6M3.9 3.9 5 5M11 11l1.1 1.1M3.9 12.1 5 11M11 5l1.1-1.1"/>'),
   };
   document.getElementById("reset").innerHTML = ICONS.compose;
   document.getElementById("send").innerHTML = ICONS.arrowUp;
+  document.getElementById("mic").innerHTML = ICONS.mic;
+  document.getElementById("voice-stop").innerHTML = ICONS.stop;
 
   // What each tool is called in the activity list, in plain words.
   const TOOLS = {
@@ -679,11 +714,287 @@
 
   loadAccounts().then(async () => showConnecting(await (await fetch("/api/accounts/connect")).json()));
 
+  // Reads a stream of JSON lines from the server, calling `onEvent` for each line.
+  async function readEvents(response, onEvent) {
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) if (line) await onEvent(JSON.parse(line));
+    }
+  }
+
+  // What the page does when the agent used a tool, in text or in voice.
+  function onToolEvent(eventData) {
+    addToolCall(eventData);
+    if (eventData.tool === "remember" || eventData.tool === "forget") loadMemory();
+  }
+
+  // ---- voice: a spoken conversation, over WebRTC, directly with OpenAI ----
+  const micButton = document.getElementById("mic");
+  const voiceBar = document.getElementById("voice-bar");
+  const voiceStatus = document.getElementById("voice-status");
+  // Two ways to use the microphone:
+  //   "push": the microphone is closed until the space bar is held. Nothing in
+  //           the room is picked up by mistake. Best in an office.
+  //   "open": the microphone is always open, like a phone call. Best in a quiet room.
+  const voiceModeButton = document.getElementById("voice-mode");
+  let voiceMode = "push";
+  try { voiceMode = localStorage.getItem("voice-mode") === "open" ? "open" : "push"; } catch {}
+  let holdingToTalk = false;
+
+  const VOICE_STATES = {
+    connecting: "מתחבר…",
+    muted: "החזק את מקש הרווח ודבר.",
+    listening: "מקשיב. אפשר לדבר.",
+    hearing: "שומע אותך…",
+    thinking: "חושב…",
+    speaking: "מדבר. אפשר לקטוע אותי.",
+    approval: "ממתין לאישור שלך בכפתור למעלה.",
+  };
+  const IDLE_LIMIT_MS = 90 * 1000;        // close after this much silence, to save cost
+  const SESSION_LIMIT_MS = 20 * 60 * 1000; // and never run longer than this
+  let voice = null;
+
+  function setVoiceState(state) {
+    // With the microphone closed, "listening" would be untrue.
+    if (state === "listening" && voiceMode === "push" && !holdingToTalk) state = "muted";
+    voiceBar.dataset.state = state;
+    voiceStatus.textContent = VOICE_STATES[state];
+  }
+  // Opens or closes the microphone according to the mode and the space bar.
+  function applyMicrophone() {
+    const open = voiceMode === "open" || holdingToTalk;
+    for (const track of voice?.stream?.getTracks() ?? []) track.enabled = open;
+    voiceModeButton.textContent = voiceMode === "open" ? "מיקרופון פתוח" : "לחיצה לדיבור";
+    voiceModeButton.title = voiceMode === "open" ? "המיקרופון פתוח כל הזמן. לחץ כדי לעבור לדיבור רק בהחזקת רווח." : "המיקרופון סגור עד שמחזיקים רווח. לחץ כדי להשאיר אותו פתוח.";
+    if (voice && ["muted", "listening"].includes(voiceBar.dataset.state)) setVoiceState("listening");
+  }
+  voiceModeButton.addEventListener("click", () => {
+    voiceMode = voiceMode === "open" ? "push" : "open";
+    try { localStorage.setItem("voice-mode", voiceMode); } catch {}
+    voiceModeButton.blur();
+    applyMicrophone();
+  });
+  // Hold the space bar to talk. Releasing it closes the microphone again.
+  function holdToTalk(event, down) {
+    if (!voice || voiceMode !== "push" || event.code !== "Space") return;
+    event.preventDefault(); // do not scroll, and do not "click" a focused button
+    if (event.repeat || holdingToTalk === down) return;
+    holdingToTalk = down;
+    applyMicrophone();
+    // What happens next (thinking, speaking) arrives from the conversation itself.
+    setVoiceState(down ? "hearing" : "listening");
+  }
+  window.addEventListener("keydown", (event) => holdToTalk(event, true));
+  window.addEventListener("keyup", (event) => holdToTalk(event, false));
+  window.addEventListener("blur", () => { if (holdingToTalk) { holdingToTalk = false; applyMicrophone(); } });
+  function showVoiceUi(on) {
+    voiceBar.hidden = !on;
+    input.hidden = on;
+    micButton.hidden = on;
+    sendButton.hidden = on;
+  }
+  function addNote(text) {
+    document.getElementById("welcome")?.remove();
+    thread.append(element("div", "note", text));
+    scrollToEnd();
+  }
+  const sendVoice = (event) => {
+    if (voice && voice.channel.readyState === "open") voice.channel.send(JSON.stringify(event));
+  };
+
+  async function startVoice() {
+    if (voice || busy) return;
+    showVoiceUi(true);
+    setVoiceState("connecting");
+    const session = { tools: new Map(), bubbles: new Map(), started: Date.now(), active: Date.now(), working: 0 };
+    voice = session;
+    try {
+      session.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      session.pc = new RTCPeerConnection();
+      session.audio = new Audio();
+      session.audio.autoplay = true;
+      session.pc.ontrack = (event) => { session.audio.srcObject = event.streams[0]; };
+      for (const track of session.stream.getTracks()) session.pc.addTrack(track, session.stream);
+      holdingToTalk = false;
+      applyMicrophone(); // in "push" mode the microphone starts closed
+      document.activeElement?.blur();
+
+      // All events (what was heard, what is said, tool requests) travel on this channel.
+      session.channel = session.pc.createDataChannel("oai-events");
+      session.channel.addEventListener("open", () => { if (voice === session) setVoiceState("listening"); });
+      session.channel.addEventListener("message", (event) => { if (voice === session) onVoiceEvent(JSON.parse(event.data)); });
+      session.pc.addEventListener("connectionstatechange", () => {
+        if (voice === session && ["failed", "disconnected", "closed"].includes(session.pc.connectionState)) stopVoice("החיבור הקולי נותק.");
+      });
+
+      const offer = await session.pc.createOffer();
+      await session.pc.setLocalDescription(offer);
+      const response = await fetch("/api/voice/session", { method: "POST", headers: { "Content-Type": "application/sdp" }, body: offer.sdp });
+      const answer = await response.json();
+      if (!response.ok) throw new Error(answer.error);
+      if (voice !== session) return; // stopped while connecting
+      session.transcription = answer.transcription;
+      await session.pc.setRemoteDescription({ type: "answer", sdp: answer.answerSdp });
+
+      session.timer = setInterval(() => {
+        if (voice !== session || session.working > 0) return;
+        if (Date.now() - session.started > SESSION_LIMIT_MS) stopVoice("השיחה הקולית נסגרה אחרי 20 דקות.");
+        else if (Date.now() - session.active > IDLE_LIMIT_MS) stopVoice("השיחה הקולית נסגרה אחרי שקט, כדי לחסוך בעלות.");
+      }, 5000);
+    } catch (error) {
+      if (voice !== session) return;
+      const denied = error && (error.name === "NotAllowedError" || error.name === "SecurityError");
+      stopVoice(denied ? "אין גישה למיקרופון. צריך לאשר אותה בהגדרות המערכת, תחת פרטיות ואבטחה > מיקרופון." : "השיחה הקולית לא התחילה: " + error.message);
+    }
+  }
+
+  function stopVoice(note) {
+    const session = voice;
+    if (!session) return;
+    voice = null;
+    holdingToTalk = false;
+    clearInterval(session.timer);
+    try { session.channel?.close(); } catch {}
+    try { session.pc?.close(); } catch {}
+    for (const track of session.stream?.getTracks() ?? []) track.stop();
+    if (session.audio) session.audio.srcObject = null;
+    // A bubble that was still waiting for its text is removed, not left empty.
+    for (const bubble of session.bubbles.values()) if (bubble.querySelector(".typing")) bubble.remove();
+    showVoiceUi(false);
+    if (note) addNote(note);
+    refreshInput();
+    input.focus();
+  }
+
+  // One bubble per spoken item, found again by the item's id as its text arrives.
+  function voiceBubble(id, kind) {
+    let bubble = voice.bubbles.get(id);
+    if (!bubble) {
+      bubble = addMessage(kind);
+      voice.bubbles.set(id, bubble);
+    }
+    return bubble;
+  }
+
+  function onVoiceEvent(event) {
+    const session = voice;
+    session.active = Date.now();
+    switch (event.type) {
+      case "input_audio_buffer.speech_started":
+        setVoiceState("hearing");
+        break;
+      case "input_audio_buffer.speech_stopped":
+        setVoiceState("thinking");
+        break;
+      case "input_audio_buffer.committed":
+        // He finished speaking. Keep his place in the conversation until the words arrive.
+        if (session.transcription && event.item_id) {
+          voiceBubble(event.item_id, "user").innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+        }
+        break;
+      case "conversation.item.input_audio_transcription.completed": {
+        const bubble = voiceBubble(event.item_id, "user");
+        if ((event.transcript ?? "").trim()) bubble.replaceChildren(render(event.transcript.trim()));
+        else bubble.remove();
+        break;
+      }
+      case "conversation.item.input_audio_transcription.failed":
+        session.bubbles.get(event.item_id)?.remove();
+        break;
+      case "response.created":
+        if (voiceBar.dataset.state !== "approval") setVoiceState("thinking");
+        break;
+      case "output_audio_buffer.started":
+        setVoiceState("speaking");
+        break;
+      case "output_audio_buffer.stopped":
+      case "output_audio_buffer.cleared":
+        if (session.working === 0) setVoiceState("listening");
+        break;
+      case "response.output_audio_transcript.delta": {
+        const bubble = voiceBubble(event.item_id, "agent");
+        bubble.dataset.text = (bubble.dataset.text ?? "") + (event.delta ?? "");
+        bubble.replaceChildren(render(bubble.dataset.text));
+        scrollToEnd();
+        break;
+      }
+      case "response.output_audio_transcript.done":
+        if ((event.transcript ?? "").trim()) voiceBubble(event.item_id, "agent").replaceChildren(render(event.transcript.trim()));
+        break;
+      case "response.output_item.done":
+        if (event.item?.type === "function_call") {
+          const jobs = session.tools.get(event.response_id) ?? [];
+          jobs.push(runVoiceTool(session, event.item));
+          session.tools.set(event.response_id, jobs);
+        }
+        break;
+      case "response.done": {
+        // If the model asked for tools, give it all the results, then let it continue.
+        const jobs = session.tools.get(event.response?.id);
+        if (jobs) {
+          session.tools.delete(event.response.id);
+          Promise.all(jobs).then(() => {
+            if (voice === session) sendVoice({ type: "response.create" });
+          });
+        }
+        break;
+      }
+      case "error":
+        console.error("voice error", event.error);
+        if (event.error?.message) addNote("שגיאה בשיחה הקולית: " + event.error.message);
+        break;
+    }
+  }
+
+  // Runs one tool the voice model asked for, on our server, and hands back the result.
+  async function runVoiceTool(session, item) {
+    session.working += 1;
+    let output = JSON.stringify({ error: "The tool could not be run." });
+    try {
+      const response = await fetch("/api/voice/tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: item.name, arguments: item.arguments }),
+      });
+      await readEvents(response, (eventData) => {
+        session.active = Date.now();
+        if (eventData.type === "tool") {
+          onToolEvent(eventData);
+          // He cannot hear a link, so put it on the screen.
+          const link = eventData.ok && eventData.result && eventData.result.link;
+          if (link) addMessage("agent", "[פתח ביומן](" + link + ")");
+        }
+        if (eventData.type === "approval") {
+          if (voice === session) setVoiceState("approval");
+          addApproval(eventData, null);
+        }
+        if (eventData.type === "result") output = eventData.output;
+      });
+    } catch (error) {
+      output = JSON.stringify({ error: "Could not reach the agent's server: " + error.message });
+    }
+    session.working -= 1;
+    if (voice === session) {
+      setVoiceState("thinking");
+      sendVoice({ type: "conversation.item.create", item: { type: "function_call_output", call_id: item.call_id, output } });
+    }
+  }
+
+  micButton.addEventListener("click", startVoice);
+  document.getElementById("voice-stop").addEventListener("click", () => stopVoice());
+
   // ---- the message field ----
   function refreshInput() {
     input.style.height = "auto";
     input.style.height = input.scrollHeight + "px";
     sendButton.disabled = busy || input.value.trim() === "";
+    micButton.disabled = busy;
   }
   input.addEventListener("input", refreshInput);
 
@@ -724,28 +1035,14 @@
       });
       if (!response.ok || !response.body) throw new Error("השרת החזיר שגיאה " + response.status);
 
-      // Read the stream line by line: tool calls first, then the reply.
-      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-      let buffer = "";
+      // Read the stream event by event: tool calls first, then the reply.
       let finished = false;
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += value;
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
-        for (const line of lines) {
-          if (!line) continue;
-          const eventData = JSON.parse(line);
-          if (eventData.type === "tool") {
-            addToolCall(eventData);
-            if (eventData.tool === "remember" || eventData.tool === "forget") loadMemory();
-          }
-          if (eventData.type === "approval") addApproval(eventData, pending);
-          if (eventData.type === "reply") { show("agent", eventData.text); finished = true; }
-          if (eventData.type === "error") { show("agent error", eventData.message); finished = true; }
-        }
-      }
+      await readEvents(response, (eventData) => {
+        if (eventData.type === "tool") onToolEvent(eventData);
+        if (eventData.type === "approval") addApproval(eventData, pending);
+        if (eventData.type === "reply") { show("agent", eventData.text); finished = true; }
+        if (eventData.type === "error") { show("agent error", eventData.message); finished = true; }
+      });
       if (!finished) show("agent error", "החיבור נסגר לפני שהגיעה תשובה.");
     } catch (error) {
       show("agent error", "לא הצלחתי להגיע לשרת: " + error.message);
@@ -757,6 +1054,7 @@
   });
 
   document.getElementById("reset").addEventListener("click", async () => {
+    stopVoice();
     await fetch("/api/reset", { method: "POST" });
     showWelcome();
     input.focus();

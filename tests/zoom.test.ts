@@ -18,7 +18,7 @@ const event = {
   title: "פגישה עם טל", start: "2026-11-24T09:00:00+02:00", end: "2026-11-24T09:45:00+02:00",
   location: null, notes: "נושא: figma", attendees: [], room_email: null, account: null,
 };
-const rooms = { items: [{ resourceEmail: "vision@resource.calendar.google.com", generatedResourceName: "Vision (4)", capacity: 4 }] };
+const rooms = { items: [{ resourceEmail: "vision@resource.calendar.google.com", generatedResourceName: "TLV-1-Vision (4)", capacity: 4 }] };
 
 test("status: not configured, then configured, then connected", async () => {
   assert.deepEqual(await zoomAuth.zoomStatus(), { configured: false, connected: false, email: null });
@@ -92,7 +92,10 @@ test("event with Zoom and a room: the room stays the place, the link goes in the
   const calendarCall = JSON.parse(calls.at(-1)?.body ?? "{}");
   assert.equal(calendarCall.location, undefined);
   assert.match(calendarCall.description, /Zoom: https:\/\/zoom\.us\/j\/1$/);
-  assert.deepEqual(calendarCall.attendees, [{ email: "vision@resource.calendar.google.com", resource: true }]);
+  assert.deepEqual(calendarCall.attendees, [
+    { email: "work@example.com", responseStatus: "accepted" },
+    { email: "vision@resource.calendar.google.com", resource: true },
+  ]);
 });
 
 test("if the calendar event fails, the Zoom meeting that was just made is removed", async () => {

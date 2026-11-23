@@ -34,7 +34,7 @@ export function connect(accounts: Record<string, string[]>): void {
   writeFileSync(join(home, "secrets", "google-tokens.json"), JSON.stringify(tokens));
 }
 
-export type Call = { url: string; method: string; headers: Record<string, string>; body: string };
+export type Call = { url: string; method: string; headers: Record<string, string>; body: string; raw: unknown };
 type Handler = (call: Call) => unknown;
 
 const realFetch = globalThis.fetch;
@@ -54,6 +54,7 @@ export function fakeNetwork(routes: Record<string, Handler>): Call[] {
       method: init.method ?? "GET",
       headers: (init.headers ?? {}) as Record<string, string>,
       body: init.body ? String(init.body) : "",
+      raw: init.body,
     };
     calls.push(call);
     for (const [piece, handler] of Object.entries(routes)) {

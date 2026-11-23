@@ -11,6 +11,12 @@ import { Agent } from "../core/agent.js";
 import { connectAccount, describeAccounts, setDefaultAccount } from "../core/google/auth.js";
 import { connectZoom, zoomStatus, ZOOM_REDIRECT_URI } from "../core/zoom/auth.js";
 import { deleteFact, listFacts } from "../core/memory.js";
+import { runTool } from "../core/run-tool.js";
+import type { Approver } from "../core/run-tool.js";
+import { tools as allTools } from "../core/tools/index.js";
+import type { Tool } from "../core/tools/types.js";
+import { startVoiceSession } from "../core/voice.js";
+import type { ServerResponse } from "node:http";
 
 // Listen on this computer only. Nothing on the network can reach the agent.
 const HOST = "127.0.0.1";
@@ -22,21 +28,29 @@ const FILES: Record<string, { file: string; type: string }> = {
   "/tokens.css": { file: "tokens.css", type: "text/css; charset=utf-8" },
 };
 
-async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readText(request: IncomingMessage): Promise<string> {
   let body = "";
   for await (const chunk of request) body += chunk;
-  return JSON.parse(body || "{}") as Record<string, unknown>;
+  return body;
+}
+async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+  return JSON.parse((await readText(request)) || "{}") as Record<string, unknown>;
 }
 
 export type ServerOptions = {
   agent?: Agent;
   // How to open an address in the user's browser. Needed for connecting a Google account.
   openBrowser?: (url: string) => void;
+  // The tools the voice conversation may use. Defaults to all of them.
+  tools?: Tool[];
+  // Asks the operating system for the microphone, where that is needed (the desktop app).
+  prepareMicrophone?: () => Promise<boolean>;
 };
 
 // Starts the server and returns its address. Port 0 means "any free port".
 export function startServer(port: number, options: ServerOptions = {}): Promise<string> {
   const agent = options.agent ?? new Agent();
+  const voiceTools = options.tools ?? allTools;
 
   // The state of the "connect a Google account" flow. The page polls it.
   type Connecting =
@@ -77,6 +91,25 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
   // Approvals the page has been asked for and has not answered yet.
   const waitingApprovals = new Map<string, (approved: boolean) => void>();
 
+  // Builds the "ask the user" function for one streamed reply: it sends the
+  // question down the stream, then waits for the page's answer on /api/approve.
+  // If the page goes away before answering, every open question counts as "no".
+  function askThePage(response: ServerResponse, write: (event: object) => void): Approver {
+    const mine = new Set<string>();
+    response.on("close", () => mine.forEach((id) => waitingApprovals.get(id)?.(false)));
+    return ({ tool, summary }) =>
+      new Promise<boolean>((resolve) => {
+        const id = randomUUID();
+        mine.add(id);
+        waitingApprovals.set(id, (approved) => {
+          waitingApprovals.delete(id);
+          mine.delete(id);
+          resolve(approved);
+        });
+        write({ type: "approval", id, tool, summary });
+      });
+  }
+
   const server = createServer(async (request, response) => {
     try {
       // Only this app's own page may talk to the server. A web page open in the
@@ -110,25 +143,10 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8" });
         const write = (event: object) => response.write(JSON.stringify(event) + "\n");
 
-        // If the page goes away mid-turn, every open question counts as "no".
-        const mine = new Set<string>();
-        response.on("close", () => mine.forEach((id) => waitingApprovals.get(id)?.(false)));
-
         try {
           const reply = await agent.send(String(text ?? ""), {
             onToolCall: (call) => write({ type: "tool", ...call }),
-            // Ask the page, then wait for its answer on /api/approve.
-            approve: ({ tool, summary }) =>
-              new Promise<boolean>((resolve) => {
-                const id = randomUUID();
-                mine.add(id);
-                waitingApprovals.set(id, (approved) => {
-                  waitingApprovals.delete(id);
-                  mine.delete(id);
-                  resolve(approved);
-                });
-                write({ type: "approval", id, tool, summary });
-              }),
+            approve: askThePage(response, write),
           });
           write({ type: "reply", text: reply });
         } catch (error) {
@@ -149,6 +167,34 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
           canConnect: options.openBrowser !== undefined,
           zoom: { ...(await zoomStatus()), redirectUri: ZOOM_REDIRECT_URI },
         });
+        return;
+      }
+
+      // ---- voice ----
+      // Starts a spoken conversation: the page sends its WebRTC offer, we return OpenAI's answer.
+      if (request.method === "POST" && request.url === "/api/voice/session") {
+        try {
+          if (options.prepareMicrophone && !(await options.prepareMicrophone())) {
+            return sendJson(403, { error: "אין הרשאה למיקרופון. אפשר לאשר אותה בהגדרות המערכת, תחת פרטיות ואבטחה > מיקרופון." });
+          }
+          sendJson(200, await startVoiceSession(await readText(request), voiceTools));
+        } catch (error) {
+          sendJson(502, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+      // Runs one tool the voice model asked for, through the same gate as the text chat.
+      // Streams what happens (the tool call, an approval question), then the result.
+      if (request.method === "POST" && request.url === "/api/voice/tool") {
+        const { name, arguments: rawArguments } = await readJson(request);
+        response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8" });
+        const write = (event: object) => response.write(JSON.stringify(event) + "\n");
+        const result = await runTool(voiceTools, String(name ?? ""), typeof rawArguments === "string" ? rawArguments : "{}", {
+          onToolCall: (call) => write({ type: "tool", ...call }),
+          approve: askThePage(response, write),
+        });
+        write({ type: "result", output: JSON.stringify(result) });
+        response.end();
         return;
       }
 

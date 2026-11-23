@@ -240,7 +240,7 @@ test("find people: a source that fails does not hide the others; no match is an 
 const directoryRooms = { items: [
   { resourceEmail: "big@resource.calendar.google.com", generatedResourceName: "TLV-1-Board (12)", capacity: 12, resourceCategory: "CONFERENCE_ROOM" },
   { resourceEmail: "vision@resource.calendar.google.com", generatedResourceName: "TLV-1-Vision (4)", capacity: 4, resourceCategory: "CONFERENCE_ROOM" },
-  { resourceEmail: "phone@resource.calendar.google.com", generatedResourceName: "Phone booth (1)", capacity: 1, resourceCategory: "CONFERENCE_ROOM" },
+  { resourceEmail: "phone@resource.calendar.google.com", generatedResourceName: "TLV-1-Phone booth (1)", capacity: 1, resourceCategory: "CONFERENCE_ROOM" },
   { resourceEmail: "focus@resource.calendar.google.com", generatedResourceName: "TLV-1-Focus (6)", capacity: 6, resourceCategory: "CONFERENCE_ROOM" },
   { resourceEmail: "car@resource.calendar.google.com", generatedResourceName: "Company car", resourceCategory: "OTHER" } ] };
 const range = { start: "2026-11-24T09:00:00+02:00", end: "2026-11-24T10:00:00+02:00" };
@@ -268,15 +268,16 @@ test("rooms: when the organization's list is closed, rooms are learned from my o
     "resources/calendars": () => Response.json({ error: { message: "Not Authorized" } }, { status: 403 }),
     "calendars/primary/events": () => ({ items: [
       { attendees: [{ email: "dana@example.com" }, { email: "Vision@resource.calendar.google.com", displayName: "accessiBe TLV-1-Vision (4)", resource: true }] },
-      { attendees: [{ email: "lab@resource.calendar.google.com", displayName: "Lab", resource: true }] } ] }),
+      { attendees: [{ email: "lab@resource.calendar.google.com", displayName: "TLV Lab", resource: true }] },
+      { attendees: [{ email: "soho@resource.calendar.google.com", displayName: "NYC-Soho (8)", resource: true }] } ] }),
     "/freeBusy": () => ({ calendars: { "vision@resource.calendar.google.com": { busy: [] }, "lab@resource.calendar.google.com": { busy: [] } } }),
   });
   const result = (await rooms.findFreeRooms.run({ ...range, people: 3, account: null })) as { freeRooms: Record<string, unknown>[]; roomListFrom: string };
   assert.equal(result.roomListFrom, "my meetings");
   assert.deepEqual(result.freeRooms, [
-    { email: "vision@resource.calendar.google.com", name: "accessiBe TLV-1-Vision (4)", capacity: 4 },
-    { email: "lab@resource.calendar.google.com", name: "Lab", capacity: null },
-  ]);
+    { email: "vision@resource.calendar.google.com", name: "accessiBe TLV-1-Vision (4)", capacity: 4, country: null },
+    { email: "lab@resource.calendar.google.com", name: "TLV Lab", capacity: null, country: null },
+  ], "the New York room seen in a past meeting is not offered");
 });
 
 test("create event with people and a room: invitations are sent, and the approval says so first", async () => {
@@ -297,9 +298,10 @@ test("create event with people and a room: invitations are sent, and the approva
   const post = calls.find((c) => c.method === "POST");
   assert.equal(new URL(post?.url ?? "").searchParams.get("sendUpdates"), "all");
   assert.deepEqual(JSON.parse(post?.body ?? "{}").attendees, [
+    { email: "work@example.com", responseStatus: "accepted" },
     { email: "talgu@example.com" },
     { email: "vision@resource.calendar.google.com", resource: true },
-  ]);
+  ], "I am on the guest list of my own meeting, already accepted");
   assert.deepEqual([result.invited, result.room], [["talgu@example.com"], "TLV-1-Vision (4)"]);
 });
 
@@ -308,7 +310,7 @@ test("create event: a name instead of an address, or a room that is not a real r
   const calls = fakeNetwork({ "resources/calendars": () => directoryRooms });
   const base = { title: "x", ...range, location: null, notes: null, account: null, attendees: [], room_email: null };
   await assert.rejects(calendar.createCalendarEvent.prepare?.({ ...base, attendees: ["Tal"] }) ?? Promise.resolve(), /not an email address/);
-  await assert.rejects(calendar.createCalendarEvent.prepare?.({ ...base, room_email: "ceo@example.com" }) ?? Promise.resolve(), /not a known meeting room/);
+  await assert.rejects(calendar.createCalendarEvent.prepare?.({ ...base, room_email: "ceo@example.com" }) ?? Promise.resolve(), /not one of the rooms in the user's country/);
   assert.equal(calls.filter((c) => c.method === "POST").length, 0);
 });
 
@@ -319,4 +321,55 @@ test("an event with nobody invited sends no invitations", async () => {
   await calendar.createCalendarEvent.run(prepared);
   assert.equal(new URL(calls[0]?.url ?? "").searchParams.get("sendUpdates"), null);
   assert.equal(JSON.parse(calls[0]?.body ?? "{}").attendees, undefined);
+});
+
+test("rooms abroad are never offered and cannot be booked, whatever the model asks for", async () => {
+  connect({ "work@example.com": allScopes });
+  const { saveSettings } = await import("../src/core/settings.js");
+  await saveSettings({ defaultAccount: "work@example.com" });
+  const office = {
+    items: [
+      { resourceEmail: "tlv-a@resource.calendar.google.com", generatedResourceName: "Vision (4)", capacity: 4, buildingId: "tlv" },
+      { resourceEmail: "nyc-a@resource.calendar.google.com", generatedResourceName: "Hudson (4)", capacity: 4, buildingId: "nyc" },
+      // The building says New York even though the name mentions TLV: the building wins.
+      { resourceEmail: "nyc-b@resource.calendar.google.com", generatedResourceName: "TLV Tribute Room (6)", capacity: 6, buildingId: "nyc" },
+      // No building and nothing in the name: cannot be placed, so not offered.
+      { resourceEmail: "mystery@resource.calendar.google.com", generatedResourceName: "Atlas (5)", capacity: 5 },
+      // No building, but the name says where it is.
+      { resourceEmail: "tlv-b@resource.calendar.google.com", generatedResourceName: "accessiBe TLV-2-Focus (6)", capacity: 6 },
+      // "TLVX" is not "TLV".
+      { resourceEmail: "odd@resource.calendar.google.com", generatedResourceName: "TLVX lounge (9)", capacity: 9 },
+    ],
+  };
+  const calls = fakeNetwork({
+    "resources/calendars": () => office,
+    "resources/buildings": () => ({ buildings: [{ buildingId: "tlv", address: { regionCode: "IL" } }, { buildingId: "nyc", address: { regionCode: "US" } }] }),
+    "/freeBusy": (call) => ({ calendars: Object.fromEntries(JSON.parse(call.body).items.map((i: { id: string }) => [i.id, { busy: [] }])) }),
+    "calendars/primary/events": () => ({}),
+  });
+
+  const found = (await rooms.findFreeRooms.run({ ...range, people: 4, account: null })) as { freeRooms: { email: string }[]; roomsLeftOutAsNotLocal: number };
+  assert.deepEqual(found.freeRooms.map((r) => r.email), ["tlv-a@resource.calendar.google.com", "tlv-b@resource.calendar.google.com"]);
+  assert.equal(found.roomsLeftOutAsNotLocal, 4);
+  const checked = JSON.parse(calls.find((c) => c.url.includes("freeBusy"))?.body ?? "{}").items.map((i: { id: string }) => i.id);
+  assert.ok(!checked.some((id: string) => id.startsWith("nyc")), "rooms abroad are not even checked");
+
+  // Even if the model passes a New York room directly, it is refused before approval.
+  const event = { title: "x", ...range, location: null, notes: null, account: null, attendees: [], zoom: false };
+  for (const room of ["nyc-a@resource.calendar.google.com", "nyc-b@resource.calendar.google.com", "mystery@resource.calendar.google.com"]) {
+    await assert.rejects(calendar.createCalendarEvent.prepare?.({ ...event, room_email: room }) ?? Promise.resolve(), /not one of the rooms in the user's country/);
+  }
+  assert.ok(await calendar.createCalendarEvent.prepare?.({ ...event, room_email: "tlv-a@resource.calendar.google.com" }));
+  assert.equal(calls.filter((c) => c.method === "POST" && c.url.includes("calendars/primary/events")).length, 0);
+});
+
+test("when no room can be placed in the country, none is offered and the model is told why", async () => {
+  connect({ "work@example.com": allScopes });
+  fakeNetwork({
+    "resources/calendars": () => ({ items: [{ resourceEmail: "nyc@resource.calendar.google.com", generatedResourceName: "Hudson (4)", capacity: 4 }] }),
+    "resources/buildings": () => ({}),
+  });
+  const found = (await rooms.findFreeRooms.run({ ...range, people: 2, account: null })) as { freeRooms: unknown[]; note: string };
+  assert.deepEqual(found.freeRooms, []);
+  assert.match(found.note, /do not book a room/);
 });

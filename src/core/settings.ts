@@ -8,7 +8,23 @@ const FILE = new URL("settings.json", DATA_DIR);
 export type Settings = {
   // The account new events and drafts go to when the user does not name one.
   defaultAccount?: string;
+  // Which meeting rooms the agent may book. Only rooms in this country are ever
+  // offered. Default: Israel. See roomPolicy() below.
+  rooms?: { country?: string; nameHints?: string[] };
 };
+
+/**
+ * The rule for meeting rooms. A room is allowed only when we can tell it is in
+ * the user's country: from the organization's building list when it is known,
+ * otherwise from the room's name. A room we cannot place is not offered.
+ */
+export async function roomPolicy(): Promise<{ country: string; nameHints: string[] }> {
+  const { rooms } = await loadSettings();
+  return {
+    country: (rooms?.country ?? "IL").toUpperCase(),
+    nameHints: rooms?.nameHints ?? ["TLV", "Tel Aviv", "Israel", "תל אביב", "ישראל"],
+  };
+}
 
 export async function loadSettings(): Promise<Settings> {
   try {

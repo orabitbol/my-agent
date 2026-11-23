@@ -2,7 +2,7 @@
 // It starts the local server inside the app and shows the chat page in a window.
 
 import "./load-env.js"; // must stay first
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, session, shell, systemPreferences } from "electron";
 import { startServer } from "./server.js";
 
 let serverUrl = "";
@@ -50,7 +50,16 @@ function openWindow(): void {
 
 // Not a top-level await: Electron only becomes "ready" after this file finishes loading.
 void app.whenReady().then(async () => {
-  serverUrl = await startServer(0, { openBrowser: (url) => void shell.openExternal(url) });
+  serverUrl = await startServer(0, {
+    openBrowser: (url) => void shell.openExternal(url),
+    // macOS asks the user once; after that it answers from the saved choice.
+    prepareMicrophone: async () => (process.platform === "darwin" ? systemPreferences.askForMediaAccess("microphone") : true),
+  });
+
+  // The app's own page may use the microphone. Nothing else may ask for anything.
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, allow) => {
+    allow(permission === "media" && webContents.getURL().startsWith(serverUrl));
+  });
   openWindow();
 });
 
