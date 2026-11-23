@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>הדמות</title>
+<link rel="stylesheet" href="/tokens.css">
+<style>
+  /* The character that floats above the screen. It only draws the state the
+     server holds (resting, listening, thinking, speaking…). Every value comes
+     from tokens.css. */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
+  body { display: grid; place-items: center; }
+
+  .character {
+    --mood: var(--accent);   /* the color of its light: changes with the state */
+    --eye-open: 1;           /* 1 = open, near 0 = closed */
+    --look-x: 0px; --look-y: 0px;
+    position: relative;
+    width: var(--character-size);
+    height: var(--character-size);
+    -webkit-app-region: drag; /* drag it anywhere on the screen */
+    cursor: grab;
+    animation: float var(--duration-breath) var(--ease) infinite;
+  }
+  /* Its light: a soft glow behind the body. */
+  .glow {
+    position: absolute; inset: 0;
+    border-radius: var(--radius-full);
+    background: var(--mood);
+    filter: blur(var(--character-glow));
+    opacity: 0.45;
+    transition: background var(--duration) var(--ease), opacity var(--duration) var(--ease);
+    animation: glow var(--duration-breath) var(--ease) infinite;
+  }
+  .body {
+    position: absolute; inset: 0;
+    border-radius: 46% 46% 44% 44% / 50% 50% 42% 42%;
+    background: radial-gradient(circle at 35% 25%, color-mix(in srgb, var(--mood), var(--label-on-accent) var(--character-shine)), var(--mood) 70%);
+    box-shadow: var(--shadow-control);
+    transition: background var(--duration) var(--ease);
+  }
+  .face {
+    position: absolute; inset: 0;
+    display: grid; place-items: center; align-content: center; gap: var(--space-2);
+    transform: translate(var(--look-x), var(--look-y));
+    transition: transform var(--duration) var(--ease);
+  }
+  .eyes { display: flex; gap: var(--space-4); }
+  .eye {
+    width: var(--character-eye);
+    height: calc(var(--character-eye) * 1.5);
+    border-radius: var(--radius-full);
+    background: var(--label-on-accent);
+    transform: scaleY(var(--eye-open));
+    transition: transform var(--duration-fast) var(--ease);
+  }
+  .character.blink .eye { transform: scaleY(0.1); }
+  .mouth {
+    width: var(--space-3); height: var(--space-1);
+    border-radius: var(--radius-full);
+    background: var(--label-on-accent);
+    opacity: 0;
+    transition: opacity var(--duration) var(--ease);
+  }
+
+  /* ---- one look per state ---- */
+  .character[data-state="resting"]   { --mood: var(--gray); --eye-open: 0.12; }
+  .character[data-state="resting"] .glow { opacity: 0.2; }
+  .character[data-state="ready"]     { --mood: var(--accent); }
+  .character[data-state="listening"] { --mood: var(--accent); --eye-open: 1.15; }
+  .character[data-state="hearing"]   { --mood: var(--green); --eye-open: 1.25; }
+  .character[data-state="hearing"] .glow { animation-duration: calc(var(--duration-breath) / 4); opacity: 0.7; }
+  .character[data-state="thinking"]  { --mood: var(--purple); --eye-open: 0.75; }
+  .character[data-state="thinking"] .face { animation: ponder calc(var(--duration-breath) / 1.5) var(--ease) infinite; }
+  .character[data-state="speaking"]  { --mood: var(--accent); }
+  .character[data-state="speaking"] .mouth { opacity: 1; animation: talk calc(var(--duration-breath) / 9) var(--ease) infinite alternate; }
+  .character[data-state="speaking"] .glow { animation-duration: calc(var(--duration-breath) / 5); opacity: 0.6; }
+  .character[data-state="approval"]  { --mood: var(--orange); --eye-open: 1.15; }
+  .character[data-state="approval"] { animation: nudge calc(var(--duration-breath) / 2) var(--ease) infinite; }
+
+  @keyframes float  { 50% { transform: translateY(calc(var(--space-1) * -1)); } }
+  @keyframes glow   { 50% { transform: scale(1.12); } }
+  @keyframes ponder { 0%, 100% { transform: translate(calc(var(--space-1) * -1), calc(var(--space-1) * -1)); } 50% { transform: translate(var(--space-1), calc(var(--space-1) * -1)); } }
+  @keyframes talk   { to { height: var(--space-3); } }
+  @keyframes nudge  { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(calc(var(--space-2) * -1)); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .character, .glow, .face, .mouth { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="character" id="character" data-state="resting" role="img" aria-label="הדמות של האייג'נט">
+    <div class="glow"></div>
+    <div class="body"></div>
+    <div class="face">
+      <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+      <div class="mouth"></div>
+    </div>
+  </div>
+<script>
+  const character = document.getElementById("character");
+  const LABELS = { resting: "נח", ready: "מוכן", listening: "מקשיב", hearing: "שומע אותך", thinking: "חושב", speaking: "מדבר", approval: "מחכה לאישור שלך" };
+
+  // The server holds the state; this page only draws it. If the connection
+  // drops, the browser reconnects by itself.
+  const events = new EventSource("/api/character");
+  events.onmessage = (event) => {
+    if (!(event.data in LABELS)) return;
+    character.dataset.state = event.data;
+    character.setAttribute("aria-label", "הדמות של האייג'נט: " + LABELS[event.data]);
+  };
+  events.onerror = () => { character.dataset.state = "resting"; };
+
+  // Small signs of life: a blink, and a glance to the side now and then.
+  const still = matchMedia("(prefers-reduced-motion: reduce)");
+  const awake = () => !["resting", "thinking"].includes(character.dataset.state) && !still.matches;
+  const between = (min, max) => min + Math.random() * (max - min);
+  (function blink() {
+    if (awake()) {
+      character.classList.add("blink");
+      setTimeout(() => character.classList.remove("blink"), 130);
+    }
+    setTimeout(blink, between(2500, 6000));
+  })();
+  (function glance() {
+    const away = awake() && character.dataset.state === "ready" && Math.random() < 0.6;
+    character.style.setProperty("--look-x", away ? between(-5, 5) + "px" : "0px");
+    character.style.setProperty("--look-y", away ? between(-3, 2) + "px" : "0px");
+    setTimeout(glance, between(1800, 4200));
+  })();
+</script>
+</body>
+</html>

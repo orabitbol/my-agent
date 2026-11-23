@@ -95,6 +95,13 @@
   --focus-width: 3px;         /* focus ring thickness */
   --field-max-height: 176px;  /* the message field grows up to 8 lines */
 
+  /* ---- the floating character ---- */
+  --character-size: 88px;     /* its body */
+  --character-eye: 12px;      /* the width of one eye */
+  --character-glow: 20px;     /* how far its light reaches */
+  --character-shine: 35%;     /* how much light the top of its body catches */
+  --duration-breath: 3200ms;  /* one calm breath: the character's slowest motion */
+
   /* ---- elevation ---- */
   --shadow-control: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
 

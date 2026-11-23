@@ -403,6 +403,17 @@
   const sendButton = document.getElementById("send");
   let busy = false;
 
+  // Tells the floating character what the agent is doing right now.
+  // The server keeps the state, and every screen that draws the character follows it.
+  let characterState = "resting";
+  function showCharacter(state) {
+    if (state === characterState) return;
+    characterState = state;
+    fetch("/api/character", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }) }).catch(() => {});
+  }
+  // When this window closes, nothing is happening any more.
+  window.addEventListener("pagehide", () => navigator.sendBeacon("/api/character", JSON.stringify({ state: "resting" })));
+
   // ---- small builders, so every row in the sidebar is made the same way ----
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -557,6 +568,7 @@
     const actions = element("div", "approval-actions");
     const answer = async (approved) => {
       actions.replaceWith(element("div", "approval-status", approved ? "אושר" : "בוטל"));
+      if (characterState === "approval") showCharacter("thinking");
       await post("/api/approve", { id: request.id, approved }).catch(() => {});
     };
     const yes = element("button", "button primary", "אשר");
@@ -765,6 +777,7 @@
     if (state === "listening" && voiceMode === "push" && !holdingToTalk) state = "muted";
     voiceBar.dataset.state = state;
     voiceStatus.textContent = VOICE_STATES[state];
+    showCharacter({ connecting: "thinking", muted: "ready" }[state] ?? state);
   }
   // Opens or closes the microphone according to the mode and the space bar.
   function applyMicrophone() {
@@ -867,6 +880,7 @@
     // A bubble that was still waiting for its text is removed, not left empty.
     for (const bubble of session.bubbles.values()) if (bubble.querySelector(".typing")) bubble.remove();
     showVoiceUi(false);
+    showCharacter(busy ? "thinking" : "resting");
     if (note) addNote(note);
     refreshInput();
     input.focus();
@@ -1014,6 +1028,7 @@
     addMessage("user", text);
     input.value = "";
     busy = true;
+    showCharacter("thinking");
     refreshInput();
 
     const pending = addMessage("agent");
@@ -1039,7 +1054,7 @@
       let finished = false;
       await readEvents(response, (eventData) => {
         if (eventData.type === "tool") onToolEvent(eventData);
-        if (eventData.type === "approval") addApproval(eventData, pending);
+        if (eventData.type === "approval") { addApproval(eventData, pending); showCharacter("approval"); }
         if (eventData.type === "reply") { show("agent", eventData.text); finished = true; }
         if (eventData.type === "error") { show("agent error", eventData.message); finished = true; }
       });
@@ -1048,6 +1063,7 @@
       show("agent error", "לא הצלחתי להגיע לשרת: " + error.message);
     } finally {
       busy = false;
+      if (!voice) showCharacter("resting");
       refreshInput();
       input.focus();
     }

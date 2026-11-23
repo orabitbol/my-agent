@@ -11,6 +11,8 @@ export type Settings = {
   // Which meeting rooms the agent may book. Only rooms in this country are ever
   // offered. Default: Israel. See roomPolicy() below.
   rooms?: { country?: string; nameHints?: string[] };
+  // Where the user left the floating character on the screen.
+  character?: { x: number; y: number };
 };
 
 /**

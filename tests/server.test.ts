@@ -167,3 +167,28 @@ test("default account: can be set from the app, only to a connected account", as
   const result = (await (await set("work@example.com")).json()) as { accounts: { email: string; isDefault: boolean }[] };
   assert.deepEqual(result.accounts.map((a) => [a.email, a.isDefault]), [["me@example.com", false], ["work@example.com", true]]);
 });
+
+test("character: the server holds the state, and a screen that draws it follows every change", async () => {
+  const base = await startServer(0, { agent: new Agent({ client: fakeModel([[say("x")]]).client, tools: [] }) });
+  assert.match(await (await fetch(base + "/character")).text(), /data-state="resting"/);
+
+  const stream = await fetch(base + "/api/character");
+  assert.match(stream.headers.get("content-type") ?? "", /text\/event-stream/);
+  const reader = stream.body!.pipeThrough(new TextDecoderStream()).getReader();
+  const next = async () => (await reader.read()).value;
+  assert.equal(await next(), "data: resting\n\n");
+
+  const set = (state: unknown) => fetch(base + "/api/character", { method: "POST", body: JSON.stringify({ state }) });
+  assert.equal((await set("thinking")).status, 204);
+  assert.equal(await next(), "data: thinking\n\n");
+  // An unknown state is refused and changes nothing.
+  assert.equal((await set("dancing")).status, 400);
+  assert.equal((await set("speaking")).status, 204);
+  assert.equal(await next(), "data: speaking\n\n");
+  await reader.cancel();
+
+  // A screen that joins later gets the current state at once.
+  const late = (await fetch(base + "/api/character")).body!.pipeThrough(new TextDecoderStream()).getReader();
+  assert.equal((await late.read()).value, "data: speaking\n\n");
+  await late.cancel();
+});

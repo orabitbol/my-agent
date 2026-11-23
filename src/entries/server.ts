@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { Agent } from "../core/agent.js";
 import { connectAccount, describeAccounts, setDefaultAccount } from "../core/google/auth.js";
 import { connectZoom, zoomStatus, ZOOM_REDIRECT_URI } from "../core/zoom/auth.js";
+import { Character, isCharacterState } from "../core/character.js";
 import { deleteFact, listFacts } from "../core/memory.js";
 import { runTool } from "../core/run-tool.js";
 import type { Approver } from "../core/run-tool.js";
@@ -26,6 +27,7 @@ const WEB = new URL("../../src/entries/web/", import.meta.url);
 const FILES: Record<string, { file: string; type: string }> = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/tokens.css": { file: "tokens.css", type: "text/css; charset=utf-8" },
+  "/character": { file: "character.html", type: "text/html; charset=utf-8" },
 };
 
 async function readText(request: IncomingMessage): Promise<string> {
@@ -51,6 +53,8 @@ export type ServerOptions = {
 export function startServer(port: number, options: ServerOptions = {}): Promise<string> {
   const agent = options.agent ?? new Agent();
   const voiceTools = options.tools ?? allTools;
+  // What the agent is doing right now. The chat page reports it, the character draws it.
+  const character = new Character();
 
   // The state of the "connect a Google account" flow. The page polls it.
   type Connecting =
@@ -167,6 +171,25 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
           canConnect: options.openBrowser !== undefined,
           zoom: { ...(await zoomStatus()), redirectUri: ZOOM_REDIRECT_URI },
         });
+        return;
+      }
+
+      // ---- the character ----
+      // The chat page says what the agent is doing right now.
+      if (request.method === "POST" && request.url === "/api/character") {
+        const { state } = await readJson(request);
+        if (!isCharacterState(state)) return void response.writeHead(400).end();
+        character.set(state);
+        response.writeHead(204).end();
+        return;
+      }
+      // A screen that draws the character listens here: it gets the state now,
+      // and again on every change (server-sent events).
+      if (request.method === "GET" && request.url === "/api/character") {
+        response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store" });
+        const send = (state: string) => response.write(`data: ${state}\n\n`);
+        send(character.state);
+        response.on("close", character.watch(send));
         return;
       }
 
