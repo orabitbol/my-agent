@@ -192,3 +192,22 @@ test("character: the server holds the state, and a screen that draws it follows 
   assert.equal((await late.read()).value, "data: speaking\n\n");
   await late.cancel();
 });
+
+test("character: a click, a hold and the voice level reach every screen by name", async () => {
+  const base = await startServer(0, { agent: new Agent({ client: fakeModel([[say("x")]]).client, tools: [] }) });
+  const reader = (await fetch(base + "/api/character")).body!.pipeThrough(new TextDecoderStream()).getReader();
+  const next = async () => (await reader.read()).value;
+  assert.equal(await next(), "data: resting\n\n");
+  const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", body: JSON.stringify(body) });
+
+  assert.equal((await post("/api/character/poke")).status, 204);
+  assert.equal(await next(), "event: poke\ndata: \n\n");
+  await post("/api/character/hold", { down: true });
+  assert.equal(await next(), "event: hold\ndata: down\n\n");
+  await post("/api/character/hold", { down: "yes" }); // anything except true lets go
+  assert.equal(await next(), "event: hold\ndata: up\n\n");
+  await post("/api/character/level", { level: 0.456 });
+  assert.equal(await next(), "event: level\ndata: 0.46\n\n");
+  for (const level of [2, -1, "loud"]) assert.equal((await post("/api/character/level", { level })).status, 400);
+  await reader.cancel();
+});

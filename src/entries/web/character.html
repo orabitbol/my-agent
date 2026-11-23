@@ -5,45 +5,60 @@
 <title>הדמות</title>
 <link rel="stylesheet" href="/tokens.css">
 <style>
-  /* The character that floats above the screen. It only draws the state the
-     server holds (resting, listening, thinking, speaking…). Every value comes
-     from tokens.css. */
+  /* The character that floats above the screen. It only draws: what the agent
+     is doing comes from the server, and where it stands, hops and looks comes
+     from the app. Every value comes from tokens.css. */
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
   body { display: grid; place-items: center; }
 
   .character {
     --mood: var(--accent);   /* the color of its light: changes with the state */
     --eye-open: 1;           /* 1 = open, near 0 = closed */
-    --look-x: 0px; --look-y: 0px;
+    --look-x: 0; --look-y: 0; /* where it looks: -1 to 1 on each axis */
+    --voice: 0;              /* how loud it is speaking right now: 0 to 1 */
     position: relative;
     width: var(--character-size);
     height: var(--character-size);
-    -webkit-app-region: drag; /* drag it anywhere on the screen */
-    cursor: grab;
-    animation: float var(--duration-breath) var(--ease) infinite;
+    cursor: pointer;
+    touch-action: none;
   }
+  .character.dragging { cursor: grabbing; }
+  /* Three layers of motion, one inside the other, so they never fight:
+     .hopper squashes and stretches on a hop, .floater breathes, .body reacts to the voice. */
+  .hopper, .floater { position: absolute; inset: 0; }
+  .hopper { transform-origin: 50% 100%; }
+  .floater { animation: float var(--duration-breath) var(--ease) infinite; }
+
   /* Its light: a soft glow behind the body. */
   .glow {
     position: absolute; inset: 0;
     border-radius: var(--radius-full);
     background: var(--mood);
     filter: blur(var(--character-glow));
-    opacity: 0.45;
-    transition: background var(--duration) var(--ease), opacity var(--duration) var(--ease);
+    opacity: calc(0.45 + var(--voice) * 0.4);
+    transition: background var(--duration) var(--ease), opacity var(--duration-fast) var(--ease);
     animation: glow var(--duration-breath) var(--ease) infinite;
+  }
+  /* Rings of sound that leave it while it speaks. */
+  .ring {
+    position: absolute; inset: 0;
+    border-radius: var(--radius-full);
+    border: var(--character-ring) solid var(--mood);
+    opacity: 0;
   }
   .body {
     position: absolute; inset: 0;
     border-radius: 46% 46% 44% 44% / 50% 50% 42% 42%;
     background: radial-gradient(circle at 35% 25%, color-mix(in srgb, var(--mood), var(--label-on-accent) var(--character-shine)), var(--mood) 70%);
     box-shadow: var(--shadow-control);
-    transition: background var(--duration) var(--ease);
+    transform: scale(calc(1 + var(--voice) * 0.07));
+    transition: background var(--duration) var(--ease), transform var(--duration-fast) var(--ease);
   }
   .face {
     position: absolute; inset: 0;
     display: grid; place-items: center; align-content: center; gap: var(--space-2);
-    transform: translate(var(--look-x), var(--look-y));
-    transition: transform var(--duration) var(--ease);
+    transform: translate(calc(var(--look-x) * var(--character-look)), calc(var(--look-y) * var(--character-look)));
+    transition: transform var(--duration-fast) var(--ease);
   }
   .eyes { display: flex; gap: var(--space-4); }
   .eye {
@@ -60,12 +75,14 @@
     border-radius: var(--radius-full);
     background: var(--label-on-accent);
     opacity: 0;
-    transition: opacity var(--duration) var(--ease);
+    transition: opacity var(--duration) var(--ease), height var(--duration-fast) var(--ease), width var(--duration-fast) var(--ease);
   }
 
   /* ---- one look per state ---- */
-  .character[data-state="resting"]   { --mood: var(--gray); --eye-open: 0.12; }
-  .character[data-state="resting"] .glow { opacity: 0.2; }
+  .character[data-state="resting"]   { --mood: color-mix(in srgb, var(--accent), var(--gray) 55%); }
+  .character[data-state="resting"] .glow { opacity: 0.3; }
+  .character.asleep                  { --mood: var(--gray); --eye-open: 0.12; }
+  .character.asleep .glow            { opacity: 0.15; }
   .character[data-state="ready"]     { --mood: var(--accent); }
   .character[data-state="listening"] { --mood: var(--accent); --eye-open: 1.15; }
   .character[data-state="hearing"]   { --mood: var(--green); --eye-open: 1.25; }
@@ -74,60 +91,139 @@
   .character[data-state="thinking"] .face { animation: ponder calc(var(--duration-breath) / 1.5) var(--ease) infinite; }
   .character[data-state="speaking"]  { --mood: var(--accent); }
   .character[data-state="speaking"] .mouth { opacity: 1; animation: talk calc(var(--duration-breath) / 9) var(--ease) infinite alternate; }
-  .character[data-state="speaking"] .glow { animation-duration: calc(var(--duration-breath) / 5); opacity: 0.6; }
+  .character[data-state="speaking"] .ring { animation: ring calc(var(--duration-breath) / 2) var(--ease) infinite; }
+  .character[data-state="speaking"] .ring + .ring { animation-delay: calc(var(--duration-breath) / 4); }
+  /* When the real loudness of the voice is known, the mouth follows it instead of a fixed rhythm. */
+  .character.live[data-state="speaking"] .mouth {
+    animation: none;
+    height: calc(var(--space-1) + var(--voice) * var(--space-4));
+    width: calc(var(--space-3) + var(--voice) * var(--space-1));
+  }
   .character[data-state="approval"]  { --mood: var(--orange); --eye-open: 1.15; }
-  .character[data-state="approval"] { animation: nudge calc(var(--duration-breath) / 2) var(--ease) infinite; }
+  .character[data-state="approval"] .floater { animation: nudge calc(var(--duration-breath) / 2) var(--ease) infinite; }
+  /* A hop: crouch, stretch in the air, squash on landing. The app moves the window meanwhile. */
+  .character.hop .hopper { animation: hop var(--hop-duration) var(--ease); }
 
   @keyframes float  { 50% { transform: translateY(calc(var(--space-1) * -1)); } }
   @keyframes glow   { 50% { transform: scale(1.12); } }
   @keyframes ponder { 0%, 100% { transform: translate(calc(var(--space-1) * -1), calc(var(--space-1) * -1)); } 50% { transform: translate(var(--space-1), calc(var(--space-1) * -1)); } }
   @keyframes talk   { to { height: var(--space-3); } }
+  @keyframes ring   { from { transform: scale(0.9); opacity: 0.55; } to { transform: scale(1.5); opacity: 0; } }
   @keyframes nudge  { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(calc(var(--space-2) * -1)); } }
+  @keyframes hop {
+    0%   { transform: scale(1.12, 0.86); }
+    30%  { transform: scale(0.9, 1.12); }
+    80%  { transform: scale(0.94, 1.08); }
+    92%  { transform: scale(1.14, 0.84); }
+    100% { transform: scale(1, 1); }
+  }
 
   @media (prefers-reduced-motion: reduce) {
-    .character, .glow, .face, .mouth { animation: none !important; }
+    .hopper, .floater, .glow, .ring, .face, .mouth { animation: none !important; }
   }
 </style>
 </head>
 <body>
-  <div class="character" id="character" data-state="resting" role="img" aria-label="הדמות של האייג'נט">
-    <div class="glow"></div>
-    <div class="body"></div>
-    <div class="face">
-      <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
-      <div class="mouth"></div>
-    </div>
+  <div class="character" id="character" data-state="resting" role="button" aria-label="הדמות של האייג'נט">
+    <div class="hopper"><div class="floater">
+      <div class="glow"></div>
+      <div class="ring"></div><div class="ring"></div>
+      <div class="body"></div>
+      <div class="face">
+        <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+        <div class="mouth"></div>
+      </div>
+    </div></div>
   </div>
 <script>
   const character = document.getElementById("character");
+  // The app's side of the character (see character-preload.cts). Missing in a plain browser.
+  const app = window.characterWindow;
   const LABELS = { resting: "נח", ready: "מוכן", listening: "מקשיב", hearing: "שומע אותך", thinking: "חושב", speaking: "מדבר", approval: "מחכה לאישור שלך" };
 
-  // The server holds the state; this page only draws it. If the connection
-  // drops, the browser reconnects by itself.
+  // ---- what the agent is doing: the server holds it, this page only draws it ----
+  function setState(state) {
+    if (!(state in LABELS)) return;
+    character.dataset.state = state;
+    character.setAttribute("aria-label", "הדמות של האייג'נט: " + LABELS[state] + ". לחיצה מתחילה או מסיימת שיחה.");
+    if (state !== "speaking") setVoice(0, false);
+    if (state !== "resting") character.classList.remove("asleep");
+    app?.state(state);
+  }
+  // How loud the agent's voice is right now: its mouth and its light follow.
+  function setVoice(level, live) {
+    character.style.setProperty("--voice", String(level));
+    character.classList.toggle("live", live);
+  }
+  // If the connection drops, the browser reconnects by itself.
   const events = new EventSource("/api/character");
-  events.onmessage = (event) => {
-    if (!(event.data in LABELS)) return;
-    character.dataset.state = event.data;
-    character.setAttribute("aria-label", "הדמות של האייג'נט: " + LABELS[event.data]);
-  };
-  events.onerror = () => { character.dataset.state = "resting"; };
+  events.onmessage = (event) => setState(event.data);
+  events.addEventListener("level", (event) => { if (character.dataset.state === "speaking") setVoice(Number(event.data) || 0, true); });
+  events.onerror = () => setState("resting");
 
-  // Small signs of life: a blink, and a glance to the side now and then.
+  // ---- attention: where the character looks ----
+  // A direction, -1 to 1 on each axis. Today the app sends the direction of the
+  // mouse pointer. Later the same call can carry the direction of the user's
+  // eyes from the device's camera, and nothing here has to change.
+  function setAttention({ x, y }) {
+    character.style.setProperty("--look-x", String(Math.max(-1, Math.min(1, x))));
+    character.style.setProperty("--look-y", String(Math.max(-1, Math.min(1, y))));
+  }
+
+  // ---- what the app tells the character ----
+  app?.listen((name, data) => {
+    if (name === "attention") setAttention(data);
+    if (name === "asleep") { character.classList.toggle("asleep", data === true); if (data === true) setAttention({ x: 0, y: 0 }); }
+    if (name === "hop") {
+      character.style.setProperty("--hop-duration", Number(data) + "ms");
+      character.classList.remove("hop");
+      void character.offsetWidth; // start the animation again from the beginning
+      character.classList.add("hop");
+    }
+  });
+
+  // ---- what the user does to it ----
+  //   a click:           start or stop a spoken conversation
+  //   press and hold:    talk (the microphone is open while it is held)
+  //   press and move:    drag it somewhere else
+  const HOLD_MS = 280, DRAG_DISTANCE = 4;
+  let press = null;
+  character.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || press) return;
+    character.setPointerCapture(event.pointerId);
+    press = { x: event.screenX, y: event.screenY, dragging: false, holding: false };
+    press.timer = setTimeout(() => { if (press && !press.dragging) { press.holding = true; app?.hold(true); } }, HOLD_MS);
+  });
+  character.addEventListener("pointermove", (event) => {
+    if (!press || press.dragging) return;
+    if (Math.hypot(event.screenX - press.x, event.screenY - press.y) < DRAG_DISTANCE) return;
+    clearTimeout(press.timer);
+    if (press.holding) app?.hold(false);
+    press.holding = false;
+    press.dragging = true;
+    character.classList.add("dragging");
+    app?.dragStart();
+  });
+  function release() {
+    if (!press) return;
+    clearTimeout(press.timer);
+    if (press.dragging) app?.dragEnd();
+    else if (press.holding) app?.hold(false);
+    else app?.click();
+    character.classList.remove("dragging");
+    press = null;
+  }
+  character.addEventListener("pointerup", release);
+  character.addEventListener("pointercancel", release);
+
+  // ---- a small sign of life: it blinks ----
   const still = matchMedia("(prefers-reduced-motion: reduce)");
-  const awake = () => !["resting", "thinking"].includes(character.dataset.state) && !still.matches;
-  const between = (min, max) => min + Math.random() * (max - min);
   (function blink() {
-    if (awake()) {
+    if (!character.classList.contains("asleep") && !still.matches) {
       character.classList.add("blink");
       setTimeout(() => character.classList.remove("blink"), 130);
     }
-    setTimeout(blink, between(2500, 6000));
-  })();
-  (function glance() {
-    const away = awake() && character.dataset.state === "ready" && Math.random() < 0.6;
-    character.style.setProperty("--look-x", away ? between(-5, 5) + "px" : "0px");
-    character.style.setProperty("--look-y", away ? between(-3, 2) + "px" : "0px");
-    setTimeout(glance, between(1800, 4200));
+    setTimeout(blink, 2500 + Math.random() * 3500);
   })();
 </script>
 </body>

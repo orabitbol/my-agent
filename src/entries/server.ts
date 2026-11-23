@@ -183,12 +183,33 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         response.writeHead(204).end();
         return;
       }
-      // A screen that draws the character listens here: it gets the state now,
-      // and again on every change (server-sent events).
+      // A click on the character, or holding it down. The chat page acts on it.
+      if (request.method === "POST" && request.url === "/api/character/poke") {
+        character.signal("poke");
+        response.writeHead(204).end();
+        return;
+      }
+      if (request.method === "POST" && request.url === "/api/character/hold") {
+        const { down } = await readJson(request);
+        character.signal("hold", down === true ? "down" : "up");
+        response.writeHead(204).end();
+        return;
+      }
+      // How loud the agent's voice is right now, so the character's mouth can follow it.
+      if (request.method === "POST" && request.url === "/api/character/level") {
+        const level = Number((await readJson(request)).level);
+        if (!(level >= 0 && level <= 1)) return void response.writeHead(400).end();
+        character.signal("level", level.toFixed(2));
+        response.writeHead(204).end();
+        return;
+      }
+      // Every screen listens here (server-sent events): it gets the state now and
+      // on every change, and the passing events (poke, hold, level) by name.
       if (request.method === "GET" && request.url === "/api/character") {
         response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store" });
-        const send = (state: string) => response.write(`data: ${state}\n\n`);
-        send(character.state);
+        const send = (signal: string, data: string) =>
+          response.write(signal === "state" ? `data: ${data}\n\n` : `event: ${signal}\ndata: ${data}\n\n`);
+        send("state", character.state);
         response.on("close", character.watch(send));
         return;
       }

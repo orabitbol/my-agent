@@ -761,7 +761,7 @@
 
   const VOICE_STATES = {
     connecting: "מתחבר…",
-    muted: "החזק את מקש הרווח ודבר.",
+    muted: "החזק את מקש הרווח, או לחץ והחזק את הדמות, ודבר.",
     listening: "מקשיב. אפשר לדבר.",
     hearing: "שומע אותך…",
     thinking: "חושב…",
@@ -797,7 +797,12 @@
   function holdToTalk(event, down) {
     if (!voice || voiceMode !== "push" || event.code !== "Space") return;
     event.preventDefault(); // do not scroll, and do not "click" a focused button
-    if (event.repeat || holdingToTalk === down) return;
+    if (event.repeat) return;
+    setHolding(down);
+  }
+  // The same thing from anywhere: the space bar here, or holding the floating character.
+  function setHolding(down) {
+    if (!voice || voiceMode !== "push" || holdingToTalk === down) return;
     holdingToTalk = down;
     applyMicrophone();
     // What happens next (thinking, speaking) arrives from the conversation itself.
@@ -832,7 +837,7 @@
       session.pc = new RTCPeerConnection();
       session.audio = new Audio();
       session.audio.autoplay = true;
-      session.pc.ontrack = (event) => { session.audio.srcObject = event.streams[0]; };
+      session.pc.ontrack = (event) => { session.audio.srcObject = event.streams[0]; followVoiceLevel(session, event.streams[0]); };
       for (const track of session.stream.getTracks()) session.pc.addTrack(track, session.stream);
       holdingToTalk = false;
       applyMicrophone(); // in "push" mode the microphone starts closed
@@ -867,12 +872,45 @@
     }
   }
 
+  // Measures how loud the agent's voice is while it speaks, a few times a second,
+  // and passes it on, so the floating character's mouth moves with the real voice.
+  function followVoiceLevel(session, stream) {
+    try {
+      session.audioContext = new AudioContext();
+      const analyser = session.audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      session.audioContext.createMediaStreamSource(stream).connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      let last = 0;
+      session.levelTimer = setInterval(() => {
+        let level = 0;
+        if (voiceBar.dataset.state === "speaking") {
+          analyser.getByteTimeDomainData(samples);
+          let sum = 0;
+          for (const sample of samples) sum += ((sample - 128) / 128) ** 2;
+          level = Math.min(1, Math.sqrt(sum / samples.length) * 5);
+        }
+        if (Math.abs(level - last) < 0.03) return;
+        last = level;
+        fetch("/api/character/level", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ level }) }).catch(() => {});
+      }, 90);
+    } catch {} // without it the character still talks, in a fixed rhythm
+  }
+
+  // The floating character: a click on it starts or stops the conversation,
+  // and holding it down is the same as holding the space bar.
+  const characterEvents = new EventSource("/api/character");
+  characterEvents.addEventListener("poke", () => { if (voice) stopVoice(); else startVoice(); });
+  characterEvents.addEventListener("hold", (event) => setHolding(event.data === "down"));
+
   function stopVoice(note) {
     const session = voice;
     if (!session) return;
     voice = null;
     holdingToTalk = false;
     clearInterval(session.timer);
+    clearInterval(session.levelTimer);
+    session.audioContext?.close().catch(() => {});
     try { session.channel?.close(); } catch {}
     try { session.pc?.close(); } catch {}
     for (const track of session.stream?.getTracks() ?? []) track.stop();

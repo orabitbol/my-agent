@@ -18,9 +18,15 @@ export function isCharacterState(value: unknown): value is CharacterState {
   return (CHARACTER_STATES as readonly unknown[]).includes(value);
 }
 
+// What travels to the screens besides the state itself:
+//   "poke":  the user clicked the character (start or stop talking)
+//   "hold":  the user is holding the character down ("down") or let go ("up")
+//   "level": how loud the agent's voice is right now, 0 to 1, so its mouth can follow
+export type CharacterSignal = "state" | "poke" | "hold" | "level";
+
 export class Character {
   private current: CharacterState = "resting";
-  private watchers = new Set<(state: CharacterState) => void>();
+  private watchers = new Set<(signal: CharacterSignal, data: string) => void>();
 
   get state(): CharacterState {
     return this.current;
@@ -29,11 +35,16 @@ export class Character {
   set(state: CharacterState): void {
     if (state === this.current) return;
     this.current = state;
-    for (const watcher of this.watchers) watcher(state);
+    this.signal("state", state);
   }
 
-  // Calls back on every change. Returns a function that stops watching.
-  watch(watcher: (state: CharacterState) => void): () => void {
+  // Passes a passing event to every screen. Unlike the state, it is not kept.
+  signal(signal: CharacterSignal, data = ""): void {
+    for (const watcher of this.watchers) watcher(signal, data);
+  }
+
+  // Calls back on every change and event. Returns a function that stops watching.
+  watch(watcher: (signal: CharacterSignal, data: string) => void): () => void {
     this.watchers.add(watcher);
     return () => void this.watchers.delete(watcher);
   }

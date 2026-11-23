@@ -12,7 +12,8 @@ export type Settings = {
   // offered. Default: Israel. See roomPolicy() below.
   rooms?: { country?: string; nameHints?: string[] };
   // Where the user left the floating character on the screen.
-  character?: { x: number; y: number };
+  // "roam: false" keeps it in place instead of strolling around the screen.
+  character?: { x?: number; y?: number; roam?: boolean };
 };
 
 /**
