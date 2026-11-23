@@ -190,6 +190,7 @@
   .voice-bar[data-state="muted"] .voice-orb { --orb-color: var(--gray); }
   .voice-mode { flex: none; font-size: var(--text-callout); color: var(--label-secondary); background: var(--fill); }
   .voice-mode:hover { background: var(--fill-strong); color: var(--label); }
+  .voice-mode[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) var(--tint), transparent); color: var(--accent); }
   .stop { background: var(--red); }
   .stop:active { background: var(--red); }
   .note { align-self: center; margin: var(--space-2) 0; color: var(--label-secondary); font-size: var(--text-callout); line-height: var(--lh-body); text-align: center; }
@@ -313,6 +314,7 @@
       <div class="voice-bar" id="voice-bar" data-state="connecting" role="status" hidden>
         <span class="voice-orb"></span>
         <span class="voice-status" id="voice-status"></span>
+        <button class="button voice-mode" id="voice-vision" type="button" aria-pressed="false"></button>
         <button class="button voice-mode" id="voice-mode" type="button"></button>
         <button class="send stop" id="voice-stop" type="button" title="סיים שיחה קולית" aria-label="סיים שיחה קולית"></button>
       </div>
@@ -393,6 +395,7 @@
     create_email_draft: { label: "שמר טיוטת מייל", icon: "draft", color: "green" },
     remember: { label: "שמר בזיכרון", icon: "memory", color: "purple" },
     forget: { label: "מחק מהזיכרון", icon: "memory", color: "gray" },
+    use_computer: { label: "פעל במחשב", icon: "room", color: "orange" },
   };
 
   const thread = document.getElementById("thread");
@@ -758,6 +761,11 @@
   let voiceMode = "push";
   try { voiceMode = localStorage.getItem("voice-mode") === "open" ? "open" : "push"; } catch {}
   let holdingToTalk = false;
+  // Vision: when on, the agent gets a picture of every screen at the moment the
+  // user starts to speak. Off until the user switches it on.
+  const visionButton = document.getElementById("voice-vision");
+  let vision = false;
+  try { vision = localStorage.getItem("voice-vision") === "on"; } catch {}
 
   const VOICE_STATES = {
     connecting: "מתחבר…",
@@ -787,6 +795,52 @@
     voiceModeButton.title = voiceMode === "open" ? "המיקרופון פתוח כל הזמן. לחץ כדי לעבור לדיבור רק בהחזקת רווח." : "המיקרופון סגור עד שמחזיקים רווח. לחץ כדי להשאיר אותו פתוח.";
     if (voice && ["muted", "listening"].includes(voiceBar.dataset.state)) setVoiceState("listening");
   }
+  function applyVision() {
+    visionButton.textContent = vision ? "רואה את המסך" : "לא רואה את המסך";
+    visionButton.title = vision ? "כשאתה מתחיל לדבר נשלחת תמונה של כל מסך. לחץ כדי לכבות." : "האייג'נט לא רואה את המסך. לחץ כדי שיראה אותו כשאתה מדבר.";
+    visionButton.setAttribute("aria-pressed", String(vision));
+    // The floating character shows that it can see, for as long as a conversation is on.
+    post("/api/character/vision", { on: vision && voice !== null }).catch(() => {});
+  }
+  function setVision(on) {
+    vision = on;
+    try { localStorage.setItem("voice-vision", on ? "on" : "off"); } catch {}
+    if (!on && voice) forgetScreens(voice);
+    applyVision();
+  }
+  visionButton.addEventListener("click", () => { visionButton.blur(); setVision(!vision); });
+  // Takes the pictures out of the conversation, so the agent no longer has them.
+  function forgetScreens(session) {
+    for (const { itemId } of session.screens.values()) sendVoice({ type: "conversation.item.delete", item_id: itemId });
+    session.screens.clear();
+  }
+  // Hands the agent a current picture of every screen. Called when the user
+  // starts to speak. Only the newest picture of each screen stays in the
+  // conversation: the older one is removed, so the cost does not pile up.
+  async function shareScreens(session) {
+    if (!vision || session.sharing || session.channel?.readyState !== "open") return;
+    session.sharing = true;
+    try {
+      // One message on this connection has a size limit, and the picture must fit in it.
+      const limit = Math.floor(((session.pc.sctp?.maxMessageSize || 262144) - 2048) * 0.72);
+      const response = await fetch("/api/screens?max=" + limit);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      if (voice !== session || !vision) return;
+      for (const screen of body.screens) {
+        const before = session.screens.get(screen.id);
+        if (before?.image === screen.image) continue; // nothing changed on this screen
+        if (before) sendVoice({ type: "conversation.item.delete", item_id: before.itemId });
+        const itemId = "screen_" + (session.screenCount = (session.screenCount ?? 0) + 1);
+        sendVoice({ type: "conversation.item.create", item: { id: itemId, type: "message", role: "user", content: [{ type: "input_text", text: screen.label }, { type: "input_image", image_url: screen.image }] } });
+        session.screens.set(screen.id, { image: screen.image, itemId });
+      }
+    } catch (error) {
+      if (voice === session) { setVision(false); addNote("הראייה כובתה: " + error.message); }
+    } finally {
+      session.sharing = false;
+    }
+  }
   voiceModeButton.addEventListener("click", () => {
     voiceMode = voiceMode === "open" ? "push" : "open";
     try { localStorage.setItem("voice-mode", voiceMode); } catch {}
@@ -805,6 +859,7 @@
     if (!voice || voiceMode !== "push" || holdingToTalk === down) return;
     holdingToTalk = down;
     applyMicrophone();
+    if (down) void shareScreens(voice);
     // What happens next (thinking, speaking) arrives from the conversation itself.
     setVoiceState(down ? "hearing" : "listening");
   }
@@ -830,8 +885,9 @@
     if (voice || busy) return;
     showVoiceUi(true);
     setVoiceState("connecting");
-    const session = { tools: new Map(), bubbles: new Map(), started: Date.now(), active: Date.now(), working: 0 };
+    const session = { tools: new Map(), bubbles: new Map(), screens: new Map(), started: Date.now(), active: Date.now(), working: 0 };
     voice = session;
+    applyVision();
     try {
       session.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       session.pc = new RTCPeerConnection();
@@ -918,6 +974,7 @@
     // A bubble that was still waiting for its text is removed, not left empty.
     for (const bubble of session.bubbles.values()) if (bubble.querySelector(".typing")) bubble.remove();
     showVoiceUi(false);
+    applyVision();
     showCharacter(busy ? "thinking" : "resting");
     if (note) addNote(note);
     refreshInput();
@@ -940,6 +997,8 @@
     switch (event.type) {
       case "input_audio_buffer.speech_started":
         setVoiceState("hearing");
+        // With an open microphone, this is the moment he starts to speak.
+        if (voiceMode === "open") void shareScreens(session);
         break;
       case "input_audio_buffer.speech_stopped":
         setVoiceState("thinking");

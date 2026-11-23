@@ -42,7 +42,10 @@ export async function runTool(tools: Tool[], name: string, rawArgs: string, hand
     if (tool.needsApproval && !(await isApproved(tool, toolArgs, handlers.approve))) {
       result = { declined: true, message: "The user did not approve this action. Do not try again unless the user asks." };
     } else {
-      result = await tool.run(toolArgs);
+      const approve = handlers.approve;
+      result = await tool.run(toolArgs, {
+        confirm: async (summary) => (approve ? approve({ tool: tool.name, summary, args: toolArgs }) : false),
+      });
       ok = true;
     }
   } catch (error) {

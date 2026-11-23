@@ -13,7 +13,8 @@ export type Settings = {
   rooms?: { country?: string; nameHints?: string[] };
   // Where the user left the floating character on the screen.
   // "roam: false" keeps it in place instead of strolling around the screen.
-  character?: { x?: number; y?: number; roam?: boolean };
+  // "roamSeconds" is how long it stays in one place between glides: [least, most].
+  character?: { x?: number; y?: number; roam?: boolean; roamSeconds?: [number, number] };
 };
 
 /**

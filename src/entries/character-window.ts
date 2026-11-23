@@ -1,5 +1,5 @@
 // The character's window: small, see-through, above every app.
-// This file is its body in the world: where it stands, how it hops around the
+// This file is its body in the world: where it stands, how it glides around the
 // screen and between screens, and what it looks at. What it is *doing*
 // (listening, thinking…) is not decided here: that state lives in the server.
 
@@ -9,12 +9,14 @@ import { loadSettings, saveSettings } from "../core/settings.js";
 
 // The window: the character's body plus room for its glow.
 const SIZE = 144;
+const BODY = 88;                     // the character itself; must match --character-size in tokens.css
 const MARGIN = 24;
 const FRAME_MS = 16;
-const STEP = 240;                    // the longest single hop, in points
+const ROAM_SECONDS: [number, number] = [45, 100]; // how long it stays in one place between glides
 const QUIET_AFTER_TOUCH_MS = 90_000; // after the user moves it, it stays put this long
 const ASLEEP_AFTER_MS = 8 * 60_000;  // with nothing happening, it dozes off
 const LOOK_RANGE = 500;              // beyond this distance it looks fully toward the point
+const FOLLOW_AFTER_MS = 3500;        // the pointer must settle on another screen this long before it follows
 
 type Point = { x: number; y: number };
 export type CharacterOptions = {
@@ -30,6 +32,14 @@ const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 export async function openCharacter(options: CharacterOptions): Promise<BrowserWindow> {
   const settings = await loadSettings();
   const roams = settings.character?.roam !== false;
+  const [stayMin, stayMax] = settings.character?.roamSeconds ?? ROAM_SECONDS;
+  const pagePreferences = {
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+    backgroundThrottling: false, // it keeps moving while the user works in another app
+    preload: fileURLToPath(new URL("./character-preload.cjs", import.meta.url)),
+  };
 
   // Start in the bottom corner, or where the user last left it, if that spot is still on a screen.
   const { workArea } = screen.getPrimaryDisplay();
@@ -55,13 +65,7 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
     fullscreenable: false,
     skipTaskbar: true,
     show: false,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      backgroundThrottling: false, // it keeps moving while the user works in another app
-      preload: fileURLToPath(new URL("./character-preload.cjs", import.meta.url)),
-    },
+    webPreferences: pagePreferences,
   });
   options.keepInside(window);
   // Above normal windows, on every desktop, and over full-screen apps too.
@@ -80,7 +84,7 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
   let lastActivity = Date.now(); // the last time anything happened to it
   let lastTouched = 0;           // the last time the user moved it
   let dragging: { offset: Point; timer: NodeJS.Timeout } | null = null;
-  let hopping = false;
+  let gliding = false;
   let asleep = false;
   const busy = () => !["resting", "ready"].includes(state);
 
@@ -129,50 +133,124 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
   ipcMain.on("character:drag", onDrag);
 
   // ---- moving ----
-  // One hop: the window travels along an arc while the page squashes and stretches.
-  async function hop(to: Point, duration: number, height: number): Promise<boolean> {
+  // The small window cannot move smoothly enough by itself, so for a glide the
+  // character changes stage: a see-through sheet covers each screen, clicks pass
+  // straight through it, and the character flies across it with a trail of light.
+  // When it lands, the small window reappears in the new place and the sheet goes away.
+  const stages = new Map<number, BrowserWindow>();
+  function stageFor(display: Electron.Display): BrowserWindow {
+    let stage = stages.get(display.id);
+    if (stage && !stage.isDestroyed()) return stage;
+    stage = new BrowserWindow({
+      ...display.workArea,
+      transparent: true,
+      frame: false,
+      hasShadow: false,
+      resizable: false,
+      movable: false,
+      focusable: false,
+      skipTaskbar: true,
+      show: false,
+      webPreferences: pagePreferences,
+    });
+    options.keepInside(stage);
+    stage.setIgnoreMouseEvents(true); // the user's clicks reach whatever is underneath
+    stage.setAlwaysOnTop(true, "floating");
+    stage.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    void stage.loadURL(options.serverUrl + "/stage");
+    stages.set(display.id, stage);
+    return stage;
+  }
+  // Have a stage ready on every screen, also on one that is connected later.
+  const prepareStages = () => {
+    const displays = screen.getAllDisplays();
+    for (const display of displays) stageFor(display);
+    for (const [id, stage] of stages) {
+      if (displays.some((display) => display.id === id)) continue;
+      if (!stage.isDestroyed()) stage.destroy();
+      stages.delete(id);
+    }
+  };
+  prepareStages();
+  screen.on("display-added", prepareStages);
+  screen.on("display-removed", prepareStages);
+
+  // One glide to a new place, on this screen or across to another one.
+  async function glide(to: Point): Promise<void> {
+    if (gliding) return; // one journey at a time
     const from = position();
-    const started = Date.now();
-    hopping = true;
-    tell("hop", duration);
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    const duration = Math.round(Math.min(2400, 800 + distance * 0.9));
+    // A gentle arc: the path bends to one side instead of running straight.
+    const bend = distance * 0.16 * (Math.random() < 0.5 ? -1 : 1);
+    const control = { x: (from.x + to.x) / 2 - ((to.y - from.y) / (distance || 1)) * bend, y: (from.y + to.y) / 2 + ((to.x - from.x) / (distance || 1)) * bend };
+
+    // Every screen the path may cross gets the same flight, in its own coordinates.
+    const inset = (SIZE - BODY) / 2;
+    const flying = [...stages.values()].filter((stage) => !stage.isDestroyed() && !stage.webContents.isLoading());
+    if (flying.length === 0) return; // no stage is ready yet: stay where it is
+    const startAt = Date.now() + 160;
+    for (const stage of flying) {
+      const area = stage.getBounds();
+      const local = (point: Point) => ({ x: point.x + inset - area.x, y: point.y + inset - area.y });
+      stage.webContents.send("character:event", "fly", { from: local(from), control: local(control), to: local(to), startAt, duration });
+      stage.showInactive();
+    }
+    gliding = true;
     try {
-      for (;;) {
-        await wait(FRAME_MS);
-        if (window.isDestroyed() || dragging) return false;
-        const t = Math.min(1, (Date.now() - started) / duration);
-        const eased = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
-        const lift = height * 4 * t * (1 - t);
-        window.setPosition(Math.round(from.x + (to.x - from.x) * eased), Math.round(from.y + (to.y - from.y) * eased - lift));
-        if (t === 1) return true;
-      }
+      await wait(startAt - Date.now());
+      window.hide(); // the stage now shows it in the very same spot
+      await wait(duration + 60);
+      if (window.isDestroyed()) return;
+      window.setPosition(Math.round(to.x), Math.round(to.y));
+      window.showInactive();
+      tell("land");
+      await wait(90);
     } finally {
-      hopping = false;
+      gliding = false;
+      for (const stage of flying) if (!stage.isDestroyed()) { stage.webContents.send("character:event", "rest"); stage.hide(); }
     }
   }
 
-  // A stroll: a few hops to a new spot on this screen, or one big jump to another screen.
+  const displayOf = (point: Point) => screen.getDisplayMatching({ ...point, width: SIZE, height: SIZE });
+  const spotOn = (area: Electron.Rectangle): Point => ({
+    x: Math.round(between(area.x + MARGIN, area.x + area.width - SIZE - MARGIN)),
+    y: Math.round(between(area.y + MARGIN, area.y + area.height - SIZE - MARGIN)),
+  });
+
+  // A stroll: one long glide to a new spot. It stays on its own screen, which
+  // is the screen the user works on (see "following the user" below).
   async function roam(): Promise<void> {
     const here = position();
-    const display = screen.getDisplayMatching({ ...here, width: SIZE, height: SIZE });
-    const others = screen.getAllDisplays().filter((other) => other.id !== display.id);
-    const spotOn = (area: Electron.Rectangle): Point => ({
-      x: Math.round(between(area.x + MARGIN, area.x + area.width - SIZE - MARGIN)),
-      y: Math.round(between(area.y + MARGIN, area.y + area.height - SIZE - MARGIN)),
-    });
+    const area = displayOf(here).workArea;
+    // A real journey, not a shuffle: pick a spot well away from here.
+    const far = Math.hypot(area.width, area.height) * 0.35;
+    let target = spotOn(area);
+    for (let tries = 0; tries < 12 && Math.hypot(target.x - here.x, target.y - here.y) < far; tries++) target = spotOn(area);
+    await glide(target);
+  }
 
-    const other = others[Math.floor(Math.random() * others.length)];
-    if (other && Math.random() < 0.3) {
-      await hop(spotOn(other.workArea), 900, 220);
-      return;
-    }
-    const target = spotOn(display.workArea);
-    const distance = Math.hypot(target.x - here.x, target.y - here.y);
-    const hops = Math.max(1, Math.ceil(distance / STEP));
-    for (let i = 1; i <= hops; i++) {
-      const next = { x: Math.round(here.x + ((target.x - here.x) * i) / hops), y: Math.round(here.y + ((target.y - here.y) * i) / hops) };
-      if (busy() || !(await hop(next, 420, 56))) return;
-      await wait(110);
-    }
+  // Following the user: the character lives on the screen the user works on,
+  // and that is the screen the pointer is on. It does not chase the pointer:
+  // only once the pointer has settled on another screen does it glide over,
+  // to the same corner it was in before.
+  let pointerElsewhereSince = 0;
+  async function followPointer(pointer: Point): Promise<void> {
+    const here = position();
+    const mine = displayOf(here);
+    const theirs = screen.getDisplayNearestPoint(pointer);
+    if (theirs.id === mine.id || dragging) return void (pointerElsewhereSince = 0);
+    pointerElsewhereSince ||= Date.now();
+    if (gliding || Date.now() - pointerElsewhereSince < FOLLOW_AFTER_MS) return;
+    pointerElsewhereSince = 0;
+    lastActivity = Date.now(); // it wakes up to come along
+
+    const from = mine.workArea, to = theirs.workArea;
+    const place = (value: number, start: number, length: number, newStart: number, newLength: number) => {
+      const share = Math.max(0, Math.min(1, (value - start) / Math.max(1, length - SIZE)));
+      return Math.round(newStart + MARGIN + share * Math.max(0, newLength - SIZE - 2 * MARGIN));
+    };
+    await glide({ x: place(here.x, from.x, from.width, to.x, to.width), y: place(here.y, from.y, from.height, to.y, to.height) }).catch(() => {});
   }
 
   let roaming: NodeJS.Timeout;
@@ -181,7 +259,7 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
       const free = roams && !asleep && !busy() && !dragging && Date.now() - lastTouched > QUIET_AFTER_TOUCH_MS;
       if (free) await roam().catch(() => {});
       if (!window.isDestroyed()) planRoam();
-    }, between(20_000, 50_000));
+    }, between(stayMin, stayMax) * 1000);
   };
   planRoam();
 
@@ -192,6 +270,7 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
   const attention = setInterval(() => {
     if (window.isDestroyed()) return;
     const pointer = screen.getCursorScreenPoint();
+    void followPointer(pointer);
     const here = position();
     const dx = pointer.x - (here.x + SIZE / 2);
     const dy = pointer.y - (here.y + SIZE / 2);
@@ -200,7 +279,7 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
 
     const nowAsleep = state === "resting" && Date.now() - lastActivity > ASLEEP_AFTER_MS;
     if (nowAsleep !== asleep) tell("asleep", (asleep = nowAsleep));
-    if (asleep || hopping) return;
+    if (asleep || gliding) return;
 
     const strength = Math.min(1, distance / LOOK_RANGE);
     const look = { x: distance ? +((dx / distance) * strength).toFixed(2) : 0, y: distance ? +((dy / distance) * strength).toFixed(2) : 0 };
@@ -217,6 +296,9 @@ export async function openCharacter(options: CharacterOptions): Promise<BrowserW
     ipcMain.off("character:hold", onHold);
     ipcMain.off("character:state", onState);
     ipcMain.off("character:drag", onDrag);
+    screen.off("display-added", prepareStages);
+    screen.off("display-removed", prepareStages);
+    for (const stage of stages.values()) if (!stage.isDestroyed()) stage.destroy();
   });
 
   // A page that just loaded knows nothing yet: tell it again where to look.

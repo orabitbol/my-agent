@@ -28,6 +28,8 @@ const FILES: Record<string, { file: string; type: string }> = {
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/tokens.css": { file: "tokens.css", type: "text/css; charset=utf-8" },
   "/character": { file: "character.html", type: "text/html; charset=utf-8" },
+  // The same character, on the see-through sheet it glides across (see character-window.ts).
+  "/stage": { file: "character.html", type: "text/html; charset=utf-8" },
 };
 
 async function readText(request: IncomingMessage): Promise<string> {
@@ -39,6 +41,9 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return JSON.parse((await readText(request)) || "{}") as Record<string, unknown>;
 }
 
+// One picture of one screen, ready to hand to the voice model.
+export type Screenshot = { id: string; label: string; image: string };
+
 export type ServerOptions = {
   agent?: Agent;
   // How to open an address in the user's browser. Needed for connecting a Google account.
@@ -47,6 +52,10 @@ export type ServerOptions = {
   tools?: Tool[];
   // Asks the operating system for the microphone, where that is needed (the desktop app).
   prepareMicrophone?: () => Promise<boolean>;
+  // Takes a picture of every screen, each no bigger than the given size. Only the desktop app can.
+  captureScreens?: (maxBytes: number) => Promise<Screenshot[]>;
+  // Called when the user must approve something, so the entry can bring the question into view.
+  onApprovalAsked?: () => void;
 };
 
 // Starts the server and returns its address. Port 0 means "any free port".
@@ -111,6 +120,7 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
           resolve(approved);
         });
         write({ type: "approval", id, tool, summary });
+        options.onApprovalAsked?.();
       });
   }
 
@@ -126,6 +136,11 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         response.writeHead(403).end();
         return;
       }
+
+      const sendJson = (status: number, body: unknown) => {
+        response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify(body));
+      };
 
       const page = request.method === "GET" ? FILES[request.url ?? ""] : undefined;
       if (page) {
@@ -159,11 +174,6 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         response.end();
         return;
       }
-
-      const sendJson = (status: number, body: unknown) => {
-        response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-        response.end(JSON.stringify(body));
-      };
 
       if (request.method === "GET" && request.url === "/api/accounts") {
         sendJson(200, {
@@ -203,6 +213,27 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         response.writeHead(204).end();
         return;
       }
+      // Whether the agent may see the screen right now, and the moment it looks.
+      if (request.method === "POST" && request.url === "/api/character/vision") {
+        character.setVision((await readJson(request)).on === true);
+        response.writeHead(204).end();
+        return;
+      }
+      // The user's screens, as pictures. Asked for by the chat page when the user
+      // starts speaking with vision switched on. Never saved, never sent anywhere from here.
+      if (request.method === "GET" && request.url?.startsWith("/api/screens")) {
+        if (!options.captureScreens) return sendJson(501, { error: "רק אפליקציית הדסקטופ יכולה לראות את המסך." });
+        const asked = Number(new URL(request.url, "http://localhost").searchParams.get("max"));
+        const maxBytes = Math.min(Math.max(Number.isFinite(asked) ? asked : 0, 40_000), 1_000_000);
+        try {
+          const screens = await options.captureScreens(maxBytes);
+          character.signal("glance");
+          sendJson(200, { screens });
+        } catch (error) {
+          sendJson(403, { error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
       // Every screen listens here (server-sent events): it gets the state now and
       // on every change, and the passing events (poke, hold, level) by name.
       if (request.method === "GET" && request.url === "/api/character") {
@@ -210,6 +241,7 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         const send = (signal: string, data: string) =>
           response.write(signal === "state" ? `data: ${data}\n\n` : `event: ${signal}\ndata: ${data}\n\n`);
         send("state", character.state);
+        if (character.vision) send("vision", "on");
         response.on("close", character.watch(send));
         return;
       }

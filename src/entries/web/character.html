@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="/tokens.css">
 <style>
   /* The character that floats above the screen. It only draws: what the agent
-     is doing comes from the server, and where it stands, hops and looks comes
+     is doing comes from the server, and where it stands, glides and looks comes
      from the app. Every value comes from tokens.css. */
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
   body { display: grid; place-items: center; }
@@ -23,8 +23,21 @@
     touch-action: none;
   }
   .character.dragging { cursor: grabbing; }
+
+  /* The stage: a see-through sheet over a whole screen. The character is on it
+     only while it glides from place to place, with a trail of light behind it. */
+  body.stage { display: block; }
+  body.stage .character, .ghost { position: absolute; inset-block-start: 0; left: 0; pointer-events: none; will-change: transform; }
+  body.stage .character { visibility: hidden; }
+  .ghost {
+    width: var(--character-size); height: var(--character-size);
+    border-radius: var(--radius-full);
+    background: var(--mood);
+    filter: blur(calc(var(--character-glow) / 2));
+    opacity: 0;
+  }
   /* Three layers of motion, one inside the other, so they never fight:
-     .hopper squashes and stretches on a hop, .floater breathes, .body reacts to the voice. */
+     .hopper settles after a landing, .floater breathes, .body reacts to the voice. */
   .hopper, .floater { position: absolute; inset: 0; }
   .hopper { transform-origin: 50% 100%; }
   .floater { animation: float var(--duration-breath) var(--ease) infinite; }
@@ -70,6 +83,19 @@
     transition: transform var(--duration-fast) var(--ease);
   }
   .character.blink .eye { transform: scaleY(0.1); }
+  /* Pupils appear only while it can see the screen. No pupils: it sees nothing. */
+  .eye { position: relative; }
+  .eye::after {
+    content: ""; position: absolute; inset-inline: 0; margin: auto; top: 30%;
+    width: 50%; aspect-ratio: 1;
+    border-radius: var(--radius-full);
+    background: var(--character-pupil);
+    opacity: 0;
+    transition: opacity var(--duration) var(--ease);
+  }
+  .character.seeing .eye::after { opacity: 1; }
+  /* The moment it looks at the screen: its eyes sweep from side to side once. */
+  .character.glance .eyes { animation: scan calc(var(--duration-breath) / 4) var(--ease); }
   .mouth {
     width: var(--space-3); height: var(--space-1);
     border-radius: var(--radius-full);
@@ -101,29 +127,29 @@
   }
   .character[data-state="approval"]  { --mood: var(--orange); --eye-open: 1.15; }
   .character[data-state="approval"] .floater { animation: nudge calc(var(--duration-breath) / 2) var(--ease) infinite; }
-  /* A hop: crouch, stretch in the air, squash on landing. The app moves the window meanwhile. */
-  .character.hop .hopper { animation: hop var(--hop-duration) var(--ease); }
+  /* Landing after a glide: it settles softly into its new place. */
+  .character.land .hopper { animation: land calc(var(--duration) * 2) var(--ease); }
 
   @keyframes float  { 50% { transform: translateY(calc(var(--space-1) * -1)); } }
   @keyframes glow   { 50% { transform: scale(1.12); } }
   @keyframes ponder { 0%, 100% { transform: translate(calc(var(--space-1) * -1), calc(var(--space-1) * -1)); } 50% { transform: translate(var(--space-1), calc(var(--space-1) * -1)); } }
+  @keyframes scan   { 25% { transform: translateX(calc(var(--character-look) * -1)); } 75% { transform: translateX(var(--character-look)); } }
   @keyframes talk   { to { height: var(--space-3); } }
   @keyframes ring   { from { transform: scale(0.9); opacity: 0.55; } to { transform: scale(1.5); opacity: 0; } }
   @keyframes nudge  { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(calc(var(--space-2) * -1)); } }
-  @keyframes hop {
-    0%   { transform: scale(1.12, 0.86); }
-    30%  { transform: scale(0.9, 1.12); }
-    80%  { transform: scale(0.94, 1.08); }
-    92%  { transform: scale(1.14, 0.84); }
+  @keyframes land {
+    0%   { transform: scale(1.08, 0.92); }
+    55%  { transform: scale(0.98, 1.03); }
     100% { transform: scale(1, 1); }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .hopper, .floater, .glow, .ring, .face, .mouth { animation: none !important; }
+    .hopper, .floater, .glow, .ring, .face, .eyes, .mouth { animation: none !important; }
   }
 </style>
 </head>
 <body>
+  <div id="trail"></div>
   <div class="character" id="character" data-state="resting" role="button" aria-label="הדמות של האייג'נט">
     <div class="hopper"><div class="floater">
       <div class="glow"></div>
@@ -139,6 +165,10 @@
   const character = document.getElementById("character");
   // The app's side of the character (see character-preload.cts). Missing in a plain browser.
   const app = window.characterWindow;
+  // The same page is used twice: in the small window where the character lives,
+  // and on the stage it glides across.
+  const onStage = location.pathname === "/stage";
+  document.body.classList.toggle("stage", onStage);
   const LABELS = { resting: "נח", ready: "מוכן", listening: "מקשיב", hearing: "שומע אותך", thinking: "חושב", speaking: "מדבר", approval: "מחכה לאישור שלך" };
 
   // ---- what the agent is doing: the server holds it, this page only draws it ----
@@ -148,7 +178,7 @@
     character.setAttribute("aria-label", "הדמות של האייג'נט: " + LABELS[state] + ". לחיצה מתחילה או מסיימת שיחה.");
     if (state !== "speaking") setVoice(0, false);
     if (state !== "resting") character.classList.remove("asleep");
-    app?.state(state);
+    if (!onStage) app?.state(state);
   }
   // How loud the agent's voice is right now: its mouth and its light follow.
   function setVoice(level, live) {
@@ -159,7 +189,14 @@
   const events = new EventSource("/api/character");
   events.onmessage = (event) => setState(event.data);
   events.addEventListener("level", (event) => { if (character.dataset.state === "speaking") setVoice(Number(event.data) || 0, true); });
-  events.onerror = () => setState("resting");
+  // Vision: pupils while the agent may see the screen, and a quick look each time it does.
+  events.addEventListener("vision", (event) => character.classList.toggle("seeing", event.data === "on"));
+  events.addEventListener("glance", () => {
+    character.classList.remove("glance");
+    void character.offsetWidth; // start the animation again from the beginning
+    character.classList.add("glance");
+  });
+  events.onerror = () => { setState("resting"); character.classList.remove("seeing"); };
 
   // ---- attention: where the character looks ----
   // A direction, -1 to 1 on each axis. Today the app sends the direction of the
@@ -174,13 +211,54 @@
   app?.listen((name, data) => {
     if (name === "attention") setAttention(data);
     if (name === "asleep") { character.classList.toggle("asleep", data === true); if (data === true) setAttention({ x: 0, y: 0 }); }
-    if (name === "hop") {
-      character.style.setProperty("--hop-duration", Number(data) + "ms");
-      character.classList.remove("hop");
+    if (name === "land") {
+      character.classList.remove("land");
       void character.offsetWidth; // start the animation again from the beginning
-      character.classList.add("hop");
+      character.classList.add("land");
     }
+    if (onStage && name === "fly") fly(data);
+    if (onStage && name === "rest") rest();
   });
+
+  // ---- gliding across the stage ----
+  // The path is a gentle arc. It starts slowly, speeds up and slows down again,
+  // leans into the turn, and a trail of its own light follows and fades.
+  const GHOSTS = 14, GHOST_GAP_MS = 26;
+  const trail = document.getElementById("trail");
+  const ghosts = onStage ? Array.from({ length: GHOSTS }, () => trail.appendChild(Object.assign(document.createElement("div"), { className: "ghost" }))) : [];
+  let flight = 0;
+  function fly({ from, control, to, startAt, duration }) {
+    cancelAnimationFrame(flight);
+    trail.style.setProperty("--mood", getComputedStyle(character).getPropertyValue("--mood"));
+    character.style.visibility = "visible";
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const at = (time) => {
+      const t = calm ? 1 : Math.max(0, Math.min(1, (time - startAt) / duration));
+      const e = t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+      const a = (1 - e) * (1 - e), b = 2 * (1 - e) * e, c = e * e;
+      return { x: a * from.x + b * control.x + c * to.x, y: a * from.y + b * control.y + c * to.y };
+    };
+    const frame = () => {
+      const now = Date.now();
+      const here = at(now), before = at(now - 16);
+      const speed = Math.hypot(here.x - before.x, here.y - before.y);
+      const lean = Math.max(-12, Math.min(12, (here.x - before.x) * 0.9));
+      character.style.transform = `translate(${here.x}px, ${here.y}px) rotate(${lean}deg)`;
+      setAttention({ x: (here.x - before.x) / 8, y: (here.y - before.y) / 8 }); // it looks where it is going
+      ghosts.forEach((ghost, index) => {
+        const past = at(now - (index + 1) * GHOST_GAP_MS);
+        ghost.style.transform = `translate(${past.x}px, ${past.y}px) scale(${0.9 - index * 0.05})`;
+        ghost.style.opacity = String(Math.min(1, speed / 6) * (0.34 - index * 0.022)); // the trail shows only while it moves fast
+      });
+      flight = requestAnimationFrame(frame);
+    };
+    frame();
+  }
+  function rest() {
+    cancelAnimationFrame(flight);
+    character.style.visibility = "hidden";
+    for (const ghost of ghosts) ghost.style.opacity = "0";
+  }
 
   // ---- what the user does to it ----
   //   a click:           start or stop a spoken conversation
@@ -189,7 +267,7 @@
   const HOLD_MS = 280, DRAG_DISTANCE = 4;
   let press = null;
   character.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || press) return;
+    if (onStage || event.button !== 0 || press) return;
     character.setPointerCapture(event.pointerId);
     press = { x: event.screenX, y: event.screenY, dragging: false, holding: false };
     press.timer = setTimeout(() => { if (press && !press.dragging) { press.holding = true; app?.hold(true); } }, HOLD_MS);

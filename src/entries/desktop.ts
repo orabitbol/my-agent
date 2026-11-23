@@ -3,7 +3,12 @@
 
 import "./load-env.js"; // must stay first
 import { app, BrowserWindow, session, shell, systemPreferences } from "electron";
+import { Agent } from "../core/agent.js";
+import { computerTool } from "../core/tools/computer.js";
+import { tools as coreTools } from "../core/tools/index.js";
 import { openCharacter } from "./character-window.js";
+import { createComputer } from "./computer.js";
+import { captureScreens } from "./screens.js";
 import { startServer } from "./server.js";
 
 let serverUrl = "";
@@ -62,8 +67,15 @@ function openWindow(): void {
 
 // Not a top-level await: Electron only becomes "ready" after this file finishes loading.
 void app.whenReady().then(async () => {
+  // The desktop app has a computer to act on, so here the agent also gets hands.
+  const tools = [...coreTools, computerTool(createComputer())];
   serverUrl = await startServer(0, {
+    agent: new Agent({ tools }),
+    tools,
+    // An approval is waiting: bring the chat window, with its button, to the front.
+    onApprovalAsked: () => void chatReady().then(() => { mainWindow?.show(); mainWindow?.focus(); }),
     openBrowser: (url) => void shell.openExternal(url),
+    captureScreens,
     // macOS asks the user once; after that it answers from the saved choice.
     prepareMicrophone: async () => (process.platform === "darwin" ? systemPreferences.askForMediaAccess("microphone") : true),
   });

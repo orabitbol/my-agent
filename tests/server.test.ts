@@ -171,6 +171,7 @@ test("default account: can be set from the app, only to a connected account", as
 test("character: the server holds the state, and a screen that draws it follows every change", async () => {
   const base = await startServer(0, { agent: new Agent({ client: fakeModel([[say("x")]]).client, tools: [] }) });
   assert.match(await (await fetch(base + "/character")).text(), /data-state="resting"/);
+  assert.match(await (await fetch(base + "/stage")).text(), /data-state="resting"/);
 
   const stream = await fetch(base + "/api/character");
   assert.match(stream.headers.get("content-type") ?? "", /text\/event-stream/);
@@ -210,4 +211,53 @@ test("character: a click, a hold and the voice level reach every screen by name"
   assert.equal(await next(), "event: level\ndata: 0.46\n\n");
   for (const level of [2, -1, "loud"]) assert.equal((await post("/api/character/level", { level })).status, 400);
   await reader.cancel();
+});
+
+test("screens: pictures come only from the desktop app, in a size the page asked for", async () => {
+  const agent = () => new Agent({ client: fakeModel([[say("x")]]).client, tools: [] });
+  // Without the desktop app there is nothing that can look at the screen.
+  const plain = await startServer(0, { agent: agent() });
+  assert.equal((await fetch(plain + "/api/screens")).status, 501);
+
+  const asked: number[] = [];
+  let allowed = true;
+  const base = await startServer(0, {
+    agent: agent(),
+    captureScreens: async (maxBytes) => {
+      asked.push(maxBytes);
+      if (!allowed) throw new Error("אין הרשאה");
+      return [{ id: "1", label: "Current screenshot: screen 1 of 1.", image: "data:image/jpeg;base64,AAAA" }];
+    },
+  });
+  const reader = (await fetch(base + "/api/character")).body!.pipeThrough(new TextDecoderStream()).getReader();
+  assert.equal((await reader.read()).value, "data: resting\n\n");
+
+  const body = (await (await fetch(base + "/api/screens?max=150000")).json()) as { screens: { id: string }[] };
+  assert.equal(body.screens[0]?.id, "1");
+  // The character is told the moment the agent looks.
+  assert.equal((await reader.read()).value, "event: glance\ndata: \n\n");
+  // A missing or absurd size is brought into a sane range.
+  await fetch(base + "/api/screens");
+  await reader.read();
+  await fetch(base + "/api/screens?max=999999999");
+  await reader.read();
+  assert.deepEqual(asked, [150000, 40000, 1000000]);
+
+  allowed = false;
+  const refused = await fetch(base + "/api/screens?max=150000");
+  assert.equal(refused.status, 403);
+  assert.equal(((await refused.json()) as { error: string }).error, "אין הרשאה");
+
+  // Vision on and off reaches the character, and a screen that joins later is told too.
+  const set = (on: unknown) => fetch(base + "/api/character/vision", { method: "POST", body: JSON.stringify({ on }) });
+  await set(true);
+  assert.equal((await reader.read()).value, "event: vision\ndata: on\n\n");
+  const late = (await fetch(base + "/api/character")).body!.pipeThrough(new TextDecoderStream()).getReader();
+  let first = "";
+  while (!first.includes("vision")) first += (await late.read()).value;
+  assert.equal(first, "data: resting\n\nevent: vision\ndata: on\n\n");
+  await set("yes"); // anything except true switches it off
+  assert.equal((await reader.read()).value, "event: vision\ndata: off\n\n");
+  await reader.cancel();
+  await late.cancel();
 });

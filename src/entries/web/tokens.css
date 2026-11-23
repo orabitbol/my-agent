@@ -103,6 +103,7 @@
   --duration-breath: 3200ms;  /* one calm breath: the character's slowest motion */
   --character-ring: 2px;      /* the rings of sound around it when it speaks */
   --character-look: 7px;      /* how far its eyes travel toward what it looks at */
+  --character-pupil: rgba(0, 0, 0, 0.78); /* its pupils: they show only while it can see the screen */
 
   /* ---- elevation ---- */
   --shadow-control: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);

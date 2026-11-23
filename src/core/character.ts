@@ -22,7 +22,9 @@ export function isCharacterState(value: unknown): value is CharacterState {
 //   "poke":  the user clicked the character (start or stop talking)
 //   "hold":  the user is holding the character down ("down") or let go ("up")
 //   "level": how loud the agent's voice is right now, 0 to 1, so its mouth can follow
-export type CharacterSignal = "state" | "poke" | "hold" | "level";
+//   "vision": whether the agent may see the screen right now ("on" or "off")
+//   "glance": it has just looked at the screen
+export type CharacterSignal = "state" | "poke" | "hold" | "level" | "vision" | "glance";
 
 export class Character {
   private current: CharacterState = "resting";
@@ -30,6 +32,18 @@ export class Character {
 
   get state(): CharacterState {
     return this.current;
+  }
+
+  // Whether the agent may see the screen right now. Kept, like the state, so
+  // the character can always show it: the user must never be watched unknowingly.
+  private seeing = false;
+  get vision(): boolean {
+    return this.seeing;
+  }
+  setVision(on: boolean): void {
+    if (on === this.seeing) return;
+    this.seeing = on;
+    this.signal("vision", on ? "on" : "off");
   }
 
   set(state: CharacterState): void {
