@@ -25,7 +25,9 @@ export function isCharacterState(value: unknown): value is CharacterState {
 //   "vision": whether the agent may see the screen right now ("on" or "off")
 //   "glance": it has just looked at the screen
 //   "nudge":  the agent turned to the user by itself; the data is what it said
-export type CharacterSignal = "state" | "poke" | "hold" | "level" | "vision" | "glance" | "nudge";
+//   "approval": an action is waiting for the user's yes or no; the data is {id, tool, summary}
+//   "place":  it moved; the data is the screen it is on now ("computer" or "device")
+export type CharacterSignal = "state" | "poke" | "hold" | "level" | "vision" | "glance" | "nudge" | "approval" | "place";
 
 export class Character {
   private current: CharacterState = "resting";

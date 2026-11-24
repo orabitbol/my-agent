@@ -27,6 +27,7 @@ export type CharacterOptions = {
 };
 
 const between = (min: number, max: number) => min + Math.random() * (max - min);
+const LEAVE_MS = 460; // how long its goodbye takes (the "leave" animation in character.html)
 const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 // What the app can ask of the character once it is on the screen.
@@ -34,6 +35,8 @@ export type CharacterWindow = {
   window: BrowserWindow;
   // Shows a speech bubble next to it for a few seconds.
   say: (text: string) => void;
+  // true: it leaves this computer (for the desk device's screen). false: it comes back.
+  setAway: (away: boolean) => void;
 };
 
 // How long a speech bubble stays: long enough to read it, whatever its length.
@@ -97,6 +100,7 @@ export async function openCharacter(options: CharacterOptions): Promise<Characte
   let gliding = false;
   let talking = false;
   let asleep = false;
+  let away = false; // it left for the desk device's screen
   const busy = () => !["resting", "ready"].includes(state);
 
   // ---- what the user does to it (only this window's page may say so) ----
@@ -188,7 +192,7 @@ export async function openCharacter(options: CharacterOptions): Promise<Characte
 
   // One glide to a new place, on this screen or across to another one.
   async function glide(to: Point): Promise<void> {
-    if (gliding || talking) return; // one journey at a time, and not while it is saying something
+    if (gliding || talking || away) return; // one journey at a time, not while it is saying something, not while it is away
     const from = position();
     const distance = Math.hypot(to.x - from.x, to.y - from.y);
     const duration = Math.round(Math.min(2400, 800 + distance * 0.9));
@@ -250,7 +254,7 @@ export async function openCharacter(options: CharacterOptions): Promise<Characte
     const here = position();
     const mine = displayOf(here);
     const theirs = screen.getDisplayNearestPoint(pointer);
-    if (theirs.id === mine.id || dragging) return void (pointerElsewhereSince = 0);
+    if (theirs.id === mine.id || dragging || away) return void (pointerElsewhereSince = 0);
     pointerElsewhereSince ||= Date.now();
     if (gliding || Date.now() - pointerElsewhereSince < FOLLOW_AFTER_MS) return;
     pointerElsewhereSince = 0;
@@ -267,7 +271,7 @@ export async function openCharacter(options: CharacterOptions): Promise<Characte
   let roaming: NodeJS.Timeout;
   const planRoam = () => {
     roaming = setTimeout(async () => {
-      const free = roams && !asleep && !busy() && !dragging && Date.now() - lastTouched > QUIET_AFTER_TOUCH_MS;
+      const free = roams && !away && !asleep && !busy() && !dragging && Date.now() - lastTouched > QUIET_AFTER_TOUCH_MS;
       if (free) await roam().catch(() => {});
       if (!window.isDestroyed()) planRoam();
     }, between(stayMin, stayMax) * 1000);
@@ -316,7 +320,7 @@ export async function openCharacter(options: CharacterOptions): Promise<Characte
   window.webContents.on("did-finish-load", () => { lastLook = ""; });
 
   // Appear without taking the keyboard away from the app the user is in.
-  window.once("ready-to-show", () => window.showInactive());
+  window.once("ready-to-show", () => { if (!away) window.showInactive(); });
   void window.loadURL(options.serverUrl + "/character");
   // ---- speaking up ----
   // A speech bubble next to the character, drawn on the stage of its screen.
@@ -347,5 +351,27 @@ export async function openCharacter(options: CharacterOptions): Promise<Characte
   let saying = Promise.resolve();
   const say = (text: string) => void (saying = saying.then(() => sayNow(text)).catch(() => {}));
 
-  return { window, say };
+  // ---- leaving for the desk device, and coming back ----
+  // It shrinks into a point and the window hides; coming back, it grows out of
+  // a point in the same spot. One move at a time, in the order they were asked.
+  let moves = Promise.resolve();
+  async function moveNow(leave: boolean): Promise<void> {
+    if (leave === away || window.isDestroyed()) return;
+    if (leave) {
+      away = true; // from now on it starts no new journey
+      while (gliding) await wait(100);
+      if (window.isDestroyed()) return;
+      tell("leave");
+      await wait(LEAVE_MS);
+      if (!window.isDestroyed() && away) window.hide();
+    } else {
+      away = false;
+      lastActivity = Date.now(); // it comes back awake
+      tell("arrive");
+      window.showInactive();
+    }
+  }
+  const setAway = (leave: boolean) => void (moves = moves.then(() => moveNow(leave)).catch(() => {}));
+
+  return { window, say, setAway };
 }

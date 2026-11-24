@@ -55,6 +55,44 @@
   .pill.orange { --pill-color: var(--orange); }
   .pill.quiet { --pill-color: var(--label-secondary); }
 
+  /* ---------- the desk device: its light in the toolbar and its settings sheet ---------- */
+  .toolbar-end { display: flex; align-items: center; gap: var(--space-1); }
+  .device-light {
+    display: inline-flex; align-items: center; gap: var(--space-2); margin-inline-end: var(--space-2);
+    font-size: var(--text-callout); line-height: var(--lh-callout); color: var(--label-secondary);
+  }
+  .device-light[hidden] { display: none; }
+  .device-dot { width: var(--dot-size); height: var(--dot-size); border-radius: var(--radius-full); background: var(--red); transition: background var(--duration) var(--ease); }
+  .device-light[data-state="on"] .device-dot, .device-light[data-state="call"] .device-dot { background: var(--green); }
+  .sheet {
+    width: min(var(--sidebar-width) + var(--space-8) * 2, 90vw); padding: var(--space-5); border: 0;
+    border-radius: var(--radius-large); background: var(--surface-sidebar-solid); color: var(--label);
+    box-shadow: var(--shadow-popover);
+  }
+  .sheet::backdrop { background: var(--fill-strong); }
+  .sheet-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2); }
+  .sheet-header h2 { margin: 0; font-size: var(--text-title-3); line-height: var(--lh-title-3); font-weight: var(--weight-semibold); }
+  .sheet-status, .sheet-note { margin: 0 0 var(--space-3); font-size: var(--text-callout); line-height: var(--lh-callout); color: var(--label-secondary); }
+  .sheet-note { margin: var(--space-3) 0 0; }
+  .sheet .card { background: var(--surface-control); margin-top: var(--space-3); }
+  .setting { display: flex; align-items: center; gap: var(--space-3); min-height: var(--row-height); padding-inline: var(--space-4); }
+  .setting + .setting { border-top: 1px solid var(--separator); }
+  .setting-name { flex: 1; }
+  .setting input[type="range"] { width: 40%; accent-color: var(--accent); }
+  .setting output { width: var(--space-6); text-align: end; color: var(--label-secondary); font-variant-numeric: tabular-nums; }
+  .setting select { font: inherit; color: var(--label); background: var(--fill); border: 0; border-radius: var(--radius-small); padding: var(--space-1) var(--space-2); }
+  .switch {
+    appearance: none; flex: none; margin: 0; width: var(--space-8); height: var(--space-5); border-radius: var(--radius-full);
+    background: var(--fill-strong); position: relative; transition: background var(--duration) var(--ease);
+  }
+  .switch::after {
+    content: ""; position: absolute; inset-block-start: var(--space-half); inset-inline-start: var(--space-half);
+    width: var(--space-4); height: var(--space-4); border-radius: var(--radius-full); background: var(--surface-control);
+    box-shadow: var(--shadow-control); transition: inset-inline-start var(--duration) var(--ease);
+  }
+  .switch:checked { background: var(--green); }
+  .switch:checked::after { inset-inline-start: calc(var(--space-8) - var(--space-4) - var(--space-half)); }
+
   /* ---------- chat column ---------- */
   .chat { display: flex; flex-direction: column; min-width: 0; height: 100vh; background: var(--surface-window); }
   .chat .toolbar { border-bottom: 1px solid var(--separator); }
@@ -299,7 +337,11 @@
 <main class="chat">
   <header class="toolbar">
     <h1>האייג'נט שלי</h1>
-    <button class="button icon-button" id="reset" type="button" title="שיחה חדשה" aria-label="שיחה חדשה"></button>
+    <div class="toolbar-end">
+      <span class="device-light" id="device-light" data-state="off" role="status" hidden><span class="device-dot"></span><span id="device-light-text"></span></span>
+      <button class="button icon-button" id="settings-open" type="button" title="הגדרות" aria-label="הגדרות"></button>
+      <button class="button icon-button" id="reset" type="button" title="שיחה חדשה" aria-label="שיחה חדשה"></button>
+    </div>
   </header>
 
   <div class="messages" id="messages">
@@ -321,6 +363,27 @@
     </div>
   </form>
 </main>
+
+<dialog class="sheet" id="settings" aria-labelledby="settings-title">
+  <header class="sheet-header">
+    <h2 id="settings-title">הגדרות המכשיר</h2>
+    <button class="button icon-button" id="settings-close" type="button" title="סגור" aria-label="סגור"></button>
+  </header>
+  <p class="sheet-status" id="settings-status"></p>
+  <div class="card">
+    <label class="setting"><span class="setting-name">עוצמת קול</span>
+      <input type="range" id="set-volume" min="0" max="100" step="5"><output id="set-volume-value"></output></label>
+    <label class="setting"><span class="setting-name">מיקרופון מושתק</span>
+      <input type="checkbox" class="switch" id="set-muted"></label>
+  </div>
+  <div class="card">
+    <label class="setting"><span class="setting-name">שפה</span>
+      <select id="set-language"><option value="he">תמיד עברית</option><option value="auto">לפי השפה שאני מדבר</option></select></label>
+    <label class="setting"><span class="setting-name">קול</span>
+      <select id="set-voice"></select></label>
+  </div>
+  <p class="sheet-note">עוצמה והשתקה משתנות במכשיר תוך כמה שניות. שפה וקול נכנסים לתוקף בשיחה הבאה.</p>
+</dialog>
 
 <aside aria-label="חשבונות, זיכרון ופעילות">
   <header class="toolbar"></header>
@@ -379,6 +442,8 @@
     tool: svg('<circle cx="8" cy="8" r="1.4"/><path d="M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6M3.9 3.9 5 5M11 11l1.1 1.1M3.9 12.1 5 11M11 5l1.1-1.1"/>'),
   };
   document.getElementById("reset").innerHTML = ICONS.compose;
+  document.getElementById("settings-open").innerHTML = svg('<path d="M2.5 4.6h6M11.5 4.6h2M2.5 11.4h2M7.5 11.4h6"/><circle cx="10" cy="4.6" r="1.5"/><circle cx="6" cy="11.4" r="1.5"/>');
+  document.getElementById("settings-close").innerHTML = ICONS.close;
   document.getElementById("send").innerHTML = ICONS.arrowUp;
   document.getElementById("mic").innerHTML = ICONS.mic;
   document.getElementById("voice-stop").innerHTML = ICONS.stop;
@@ -396,6 +461,7 @@
     remember: { label: "שמר בזיכרון", icon: "memory", color: "purple" },
     forget: { label: "מחק מהזיכרון", icon: "memory", color: "gray" },
     get_portfolio_today: { label: "בדק את תיק ההשקעות", icon: "briefcase", color: "green" },
+    move_character: { label: "עבר למסך אחר", icon: "check", color: "blue" },
   };
 
   const thread = document.getElementById("thread");
@@ -486,7 +552,17 @@
         line.dir = "auto";
         lineText.split(/`([^`\n]+)`/g).forEach((piece, i) => {
           if (i % 2 === 1) line.append(element("code", "", piece));
-          else if (piece) appendWithLinks(line, piece);
+          else if (piece) {
+            // **bold**, as the model likes to write it, becomes real bold text.
+            piece.split(/\*\*([^*\n]+)\*\*/g).forEach((text, j) => {
+              if (!text) return;
+              if (j % 2 === 1) {
+                const strong = element("strong", "");
+                appendWithLinks(strong, text);
+                line.append(strong);
+              } else appendWithLinks(line, text);
+            });
+          }
         });
         fragment.append(line);
       }
@@ -614,6 +690,56 @@
     }
   }
   loadMemory();
+
+  // ---- the desk device: a light that says whether it reaches us, and its settings ----
+  const deviceLight = document.getElementById("device-light");
+  const settingsSheet = document.getElementById("settings");
+  const setVolume = document.getElementById("set-volume");
+  const setMuted = document.getElementById("set-muted");
+  const setLanguage = document.getElementById("set-language");
+  const setVoice = document.getElementById("set-voice");
+  const VOICE_NAMES = { "": "כמו במחשב", marin: "Marin", cedar: "Cedar", coral: "Coral", sage: "Sage", ash: "Ash" };
+  function showDevice(device) {
+    const state = !device.enabled ? "off" : device.inCall ? "call" : device.connected ? "on" : "off";
+    const text = !device.enabled ? "המכשיר לא הוגדר" : device.inCall ? "המכשיר בשיחה" : device.connected ? "המכשיר מחובר" : "המכשיר לא מחובר";
+    deviceLight.hidden = !device.enabled;
+    deviceLight.dataset.state = state;
+    document.getElementById("device-light-text").textContent = text;
+    document.getElementById("settings-status").textContent = text + ".";
+    // Do not move a control he is holding right now.
+    if (settingsSheet.contains(document.activeElement) && document.activeElement !== document.getElementById("settings-close")) return;
+    if (setVoice.options.length === 0) for (const voice of ["", ...device.voices]) setVoice.add(new Option(VOICE_NAMES[voice] ?? voice, voice));
+    setVolume.value = device.settings.volume;
+    document.getElementById("set-volume-value").textContent = device.settings.volume;
+    setMuted.checked = device.settings.muted;
+    setLanguage.value = device.settings.language;
+    setVoice.value = device.settings.voice;
+  }
+  async function loadDevice() {
+    try {
+      showDevice(await (await fetch("/api/device")).json());
+    } catch {
+      // the light is not essential: leave it as it is
+    }
+  }
+  async function saveDevice(change) {
+    document.activeElement?.blur?.();
+    try {
+      showDevice(await post("/api/device", change));
+    } catch {
+      loadDevice();
+    }
+  }
+  setVolume.addEventListener("input", () => { document.getElementById("set-volume-value").textContent = setVolume.value; });
+  setVolume.addEventListener("change", () => saveDevice({ volume: Number(setVolume.value) }));
+  setMuted.addEventListener("change", () => saveDevice({ muted: setMuted.checked }));
+  setLanguage.addEventListener("change", () => saveDevice({ language: setLanguage.value }));
+  setVoice.addEventListener("change", () => saveDevice({ voice: setVoice.value }));
+  document.getElementById("settings-open").addEventListener("click", () => { settingsSheet.showModal(); loadDevice(); });
+  document.getElementById("settings-close").addEventListener("click", () => settingsSheet.close());
+  settingsSheet.addEventListener("click", (event) => { if (event.target === settingsSheet) settingsSheet.close(); });
+  loadDevice();
+  setInterval(loadDevice, 3000);
 
   // ---- connected accounts ----
   const accountsList = document.getElementById("accounts");
@@ -958,8 +1084,15 @@
   const characterEvents = new EventSource("/api/character");
   characterEvents.addEventListener("poke", () => { if (voice) stopVoice(); else startVoice(); });
   characterEvents.addEventListener("hold", (event) => setHolding(event.data === "down"));
+  // It left for the desk device: the conversation continues there, so it ends here.
+  characterEvents.addEventListener("place", (event) => { if (event.data === "device" && voice) stopVoice(); });
   // The agent turned to the user by itself (a meeting is about to start): keep it in the chat too.
   characterEvents.addEventListener("nudge", (event) => addNote(event.data));
+  // An action asked for through the desk device waits for approval here, on the computer.
+  characterEvents.addEventListener("approval", (event) => {
+    document.getElementById("welcome")?.remove();
+    addApproval(JSON.parse(event.data), null);
+  });
 
   function stopVoice(note) {
     const session = voice;

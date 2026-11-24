@@ -17,6 +17,11 @@ import type { Approver } from "../core/run-tool.js";
 import { tools as allTools } from "../core/tools/index.js";
 import type { Tool } from "../core/tools/types.js";
 import { startVoiceSession } from "../core/voice.js";
+import { DEVICE_VOICES, deviceSettings, fillDeviceSettings, loadSettings, saveSettings } from "../core/settings.js";
+import { attachToCall } from "../core/voice-sideband.js";
+import type { SidebandOptions } from "../core/voice-sideband.js";
+import { timingSafeEqual, createHash } from "node:crypto";
+import { setMover } from "../core/place.js";
 import type { ServerResponse } from "node:http";
 
 // Listen on this computer only. Nothing on the network can reach the agent.
@@ -56,6 +61,10 @@ export type ServerOptions = {
   captureScreens?: (maxBytes: number) => Promise<Screenshot[]>;
   // Called when the user must approve something, so the entry can bring the question into view.
   onApprovalAsked?: () => void;
+  // The character moved: "device" means it left this computer for the desk device's screen.
+  onCharacterPlace?: (where: "computer" | "device") => void;
+  // The desk device (see startDeviceDoor below). Without it, nothing listens on the network.
+  device?: { port: number; key: string; connect?: SidebandOptions["connect"] };
 };
 
 // Starts the server and returns its address. Port 0 means "any free port".
@@ -124,6 +133,190 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
       });
   }
 
+  // Asks the user to approve an action when there is no chat reply to ask in
+  // (the desk device). The question goes to every open screen; the chat window
+  // shows the card. No answer within three minutes counts as "no".
+  const askAnywhere: Approver = ({ tool, summary }) =>
+    new Promise<boolean>((resolve) => {
+      const id = randomUUID();
+      const timer = setTimeout(() => waitingApprovals.get(id)?.(false), 3 * 60_000);
+      waitingApprovals.set(id, (approved) => {
+        clearTimeout(timer);
+        waitingApprovals.delete(id);
+        resolve(approved);
+      });
+      character.signal("approval", JSON.stringify({ id, tool, summary }));
+      options.onApprovalAsked?.();
+    });
+
+  // THE DEVICE'S DOOR. The main server above answers only this computer. The
+  // desk device is another machine on the home network, so it gets a door of
+  // its own: a second, tiny server that knows exactly one request, "start a
+  // voice call", and answers it only to someone who shows the device's key.
+  // The device sends its WebRTC offer; we open the call at OpenAI with our key,
+  // our instructions and our tools, join the call ourselves to run the tools,
+  // and send back OpenAI's answer. No key and no tool ever lives on the device.
+  // When the device last asked us anything, and whether it is in a call.
+  let lastSeen = 0;
+  let deviceStatus: (() => { connected: boolean; inCall: boolean }) | null = null;
+
+  // ---- where the character is ----
+  // It is on ONE screen at a time: the computer's, or the desk device's while
+  // the user talks through the device. A move is always "leave first, then
+  // arrive": the side it leaves plays its goodbye, and only then the other
+  // side is told to show it.
+  const LEAVE_COMPUTER_MS = 650; // the computer's goodbye
+  const LEAVE_DEVICE_MS = 550;   // the device's goodbye
+  let place: "computer" | "device" = "computer";
+  let onDevice = false; // what the device is told: draw the character or stay dark
+  let wanted = false;   // the user's decision: the character should be on the device
+  let arriving: NodeJS.Timeout | undefined;
+  // What the device is told changes: wake the questions it left open with us.
+  let deviceVersion = 1;
+  const deviceWaiters = new Set<() => void>();
+  const tellDevice = () => {
+    deviceVersion++;
+    for (const answer of [...deviceWaiters]) answer();
+  };
+  function moveCharacter(where: "computer" | "device", deviceReachable = true): void {
+    if (where === place) return;
+    place = where;
+    clearTimeout(arriving);
+    character.signal("place", where); // the chat page ends its own voice conversation when it leaves
+    if (where === "device") {
+      options.onCharacterPlace?.("device");
+      arriving = setTimeout(() => { onDevice = true; tellDevice(); }, LEAVE_COMPUTER_MS);
+    } else {
+      const wasThere = onDevice;
+      onDevice = false;
+      tellDevice();
+      // A device that is switched off has no goodbye to wait for.
+      arriving = setTimeout(() => options.onCharacterPlace?.("computer"), wasThere && deviceReachable ? LEAVE_DEVICE_MS : 0);
+    }
+  }
+  // While it is on the device, the device draws what the agent is doing.
+  character.watch((signal) => { if (signal === "state" && onDevice) tellDevice(); });
+
+  function startDeviceDoor(device: NonNullable<ServerOptions["device"]>): void {
+    const sameKey = (given: string) =>
+      timingSafeEqual(createHash("sha256").update(given).digest(), createHash("sha256").update(device.key).digest());
+    let current: { close: () => void } | null = null;
+    deviceStatus = () => ({ connected: deviceWaiters.size > 0 || Date.now() - lastSeen < 8000, inCall: current !== null });
+
+    // The user decides where the character is: a touch on the device's screen
+    // calls it over or sends it back, and so does telling it to move.
+    // "wanted" is that decision. The device is then told two things: show the
+    // character, and run a voice call. It never starts a call by itself.
+    const CALL_MUST_START_MS = 20_000;
+    let wantedSince = 0;
+    let pending: NodeJS.Timeout | undefined;
+    const want = (on: boolean) => {
+      clearTimeout(pending);
+      if (on === wanted) return;
+      wanted = on;
+      wantedSince = Date.now();
+      if (on) character.set("thinking"); // on its way, the call is still connecting
+      else {
+        current?.close();
+        current = null;
+        character.set("resting");
+      }
+      tellDevice();
+      settle();
+    };
+    const settle = () => {
+      const { connected } = deviceStatus!();
+      // A device that went away, or a call that never started: it comes home.
+      if (wanted && (!connected || (current === null && Date.now() - wantedSince > CALL_MUST_START_MS))) return void want(false);
+      moveCharacter(wanted && connected ? "device" : "computer", connected);
+    };
+    setInterval(settle, 1000).unref();
+    // Asked for in words ("לך למקום"): it moves a moment later, so it can finish its word first.
+    setMover((where) => {
+      if (where === "device" && !deviceStatus!().connected) return "The desk device is not connected right now, so you cannot move to it. Tell him that.";
+      clearTimeout(pending);
+      pending = setTimeout(() => want(where === "device"), 1800);
+      return null;
+    });
+
+    const door = createServer(async (request, response) => {
+      try {
+        const asked = new URL(request.url ?? "/", "http://device");
+        const asksSettings = request.method === "GET" && asked.pathname === "/device/settings";
+        const touched = request.method === "POST" && asked.pathname === "/device/touch";
+        if (!asksSettings && !touched && (request.method !== "POST" || request.url !== "/device/voice")) return void response.writeHead(404).end();
+        const given = (request.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+        if (!given || !sameKey(given)) return void response.writeHead(401).end();
+        lastSeen = Date.now();
+
+        // A touch on the device's screen: call the character over, or send it back.
+        if (touched) {
+          request.resume();
+          want(!wanted);
+          return void response.writeHead(204).end();
+        }
+
+        // The device keeps this question open: "anything new since version v?".
+        // We answer the moment there is, or after a few seconds with the same
+        // answer. The asking itself is how we know the device is switched on.
+        if (asksSettings) {
+          if (Number(asked.searchParams.get("v")) === deviceVersion) {
+            await new Promise<void>((answer) => {
+              const done = () => { clearTimeout(timer); deviceWaiters.delete(done); answer(); };
+              const timer = setTimeout(done, 5000);
+              deviceWaiters.add(done);
+              request.on("close", done);
+            });
+            if (response.destroyed) return;
+            lastSeen = Date.now();
+          }
+          const { volume, muted } = await deviceSettings();
+          const body = JSON.stringify({ v: deviceVersion, volume, muted, here: onDevice, call: wanted, face: character.state });
+          response.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+          return void response.end(body);
+        }
+
+        let offer = "";
+        for await (const chunk of request) {
+          offer += chunk;
+          if (offer.length > 64_000) return void response.writeHead(413).end();
+        }
+        if (!wanted) want(true); // a call the device started by itself also brings the character over
+        const chosen = await deviceSettings();
+        const { answerSdp, callId } = await startVoiceSession(offer, voiceTools, "device", { voice: chosen.voice, hebrewOnly: chosen.language === "he" });
+        // One device, one call: a new call replaces the one before it.
+        current?.close();
+        current = null;
+        if (callId) {
+          const call = attachToCall(callId, voiceTools, {
+            connect: device.connect,
+            approve: askAnywhere,
+            onState: (state) => character.set(state),
+          });
+          current = call;
+          void call.closed.then(() => {
+            if (current !== call) return;
+            current = null;
+            want(false); // the call ended (a long silence, or the device hung up): it goes home
+          });
+        }
+        // With its length stated, so the device gets the answer in one piece.
+        response.writeHead(200, { "Content-Type": "application/sdp", "Content-Length": Buffer.byteLength(answerSdp) });
+        response.end(answerSdp);
+      } catch (error) {
+        console.error("device:", error instanceof Error ? error.message : error);
+        if (!response.headersSent) response.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+        response.end(error instanceof Error ? error.message : String(error));
+      }
+    });
+    door.on("error", (error) => console.error("The device's door could not open:", error.message));
+    door.listen(device.port, "0.0.0.0");
+  }
+  if (options.device) {
+    if (options.device.key.length >= 32) startDeviceDoor(options.device);
+    else console.error("The device's door stays closed: DEVICE_KEY must be at least 32 characters.");
+  }
+
   const server = createServer(async (request, response) => {
     try {
       // Only this app's own page may talk to the server. A web page open in the
@@ -172,6 +365,20 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
           write({ type: "error", message: error instanceof Error ? error.message : String(error) });
         }
         response.end();
+        return;
+      }
+
+      // The desk device: its light (is it switched on and reaching us) and its settings.
+      if (request.url === "/api/device" && (request.method === "GET" || request.method === "POST")) {
+        if (request.method === "POST") {
+          const asked = await readJson(request);
+          const settings = await loadSettings();
+          const allowed = Object.fromEntries(Object.entries(asked).filter(([name]) => ["volume", "muted", "voice", "language"].includes(name)));
+          settings.device = fillDeviceSettings({ ...settings.device, ...allowed });
+          await saveSettings(settings);
+          tellDevice();
+        }
+        sendJson(200, { enabled: deviceStatus !== null, ...(deviceStatus?.() ?? { connected: false, inCall: false }), characterOn: place, settings: await deviceSettings(), voices: DEVICE_VOICES });
         return;
       }
 
@@ -261,7 +468,8 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
           if (options.prepareMicrophone && !(await options.prepareMicrophone())) {
             return sendJson(403, { error: "אין הרשאה למיקרופון. אפשר לאשר אותה בהגדרות המערכת, תחת פרטיות ואבטחה > מיקרופון." });
           }
-          sendJson(200, await startVoiceSession(await readText(request), voiceTools));
+          const { answerSdp, transcription } = await startVoiceSession(await readText(request), voiceTools);
+          sendJson(200, { answerSdp, transcription });
         } catch (error) {
           sendJson(502, { error: error instanceof Error ? error.message : String(error) });
         }

@@ -10,6 +10,9 @@ import { startServer } from "./server.js";
 
 let serverUrl = "";
 let mainWindow: BrowserWindow | null = null;
+// The floating character, and whether it is away on the desk device right now.
+let floating: Awaited<ReturnType<typeof openCharacter>> | null = null;
+let characterAway = false;
 
 // A window shows only the app's own pages. Any other link opens in the normal browser.
 function keepInside(window: BrowserWindow): void {
@@ -69,6 +72,13 @@ void app.whenReady().then(async () => {
     onApprovalAsked: () => void chatReady().then(() => { mainWindow?.show(); mainWindow?.focus(); }),
     openBrowser: (url) => void shell.openExternal(url),
     captureScreens,
+    // The character is on one screen at a time: it leaves here when it goes to the device.
+    onCharacterPlace: (where) => {
+      characterAway = where === "device";
+      floating?.setAway(characterAway);
+    },
+    // The desk device talks to this computer over the home network, if it was given a key.
+    device: process.env.DEVICE_KEY ? { port: Number(process.env.DEVICE_PORT) || 8787, key: process.env.DEVICE_KEY } : undefined,
     // macOS asks the user once; after that it answers from the saved choice.
     prepareMicrophone: async () => (process.platform === "darwin" ? systemPreferences.askForMediaAccess("microphone") : true),
   });
@@ -79,6 +89,8 @@ void app.whenReady().then(async () => {
   });
   openWindow();
   const character = await openCharacter({ serverUrl, keepInside, chatReady });
+  floating = character;
+  if (characterAway) character.setAway(true);
 
   // Initiative: before a meeting the agent speaks up by itself. It says it in a
   // bubble next to the character, as a system notification, and in the chat.

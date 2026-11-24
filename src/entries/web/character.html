@@ -144,6 +144,12 @@
   /* Landing after a glide: it settles softly into its new place. */
   .character.land .hopper { animation: land calc(var(--duration) * 2) var(--ease); }
 
+  /* Leaving for the desk device: it gathers itself and shrinks into a point.
+     Arriving back: it grows out of a point, a little past its size, and settles. */
+  .character.leaving .hopper  { animation: leave calc(var(--duration) * 2) var(--ease) forwards; transform-origin: 50% 50%; }
+  .character.arriving .hopper { animation: arrive calc(var(--duration) * 2.4) var(--ease); transform-origin: 50% 50%; }
+  @keyframes leave  { 25% { transform: scale(1.08); opacity: 1; } 100% { transform: scale(0); opacity: 0; } }
+  @keyframes arrive { 0% { transform: scale(0); opacity: 0; } 65% { transform: scale(1.1); opacity: 1; } 100% { transform: scale(1); } }
   @keyframes float  { 50% { transform: translateY(calc(var(--space-1) * -1)); } }
   @keyframes glow   { 50% { transform: scale(1.12); } }
   @keyframes ponder { 0%, 100% { transform: translate(calc(var(--space-1) * -1), calc(var(--space-1) * -1)); } 50% { transform: translate(var(--space-1), calc(var(--space-1) * -1)); } }
@@ -231,6 +237,11 @@
       character.classList.remove("land");
       void character.offsetWidth; // start the animation again from the beginning
       character.classList.add("land");
+    }
+    if (name === "leave" || name === "arrive") {
+      character.classList.remove("leaving", "arriving", "land");
+      void character.offsetWidth; // start the animation from the beginning
+      character.classList.add(name === "leave" ? "leaving" : "arriving");
     }
     if (onStage && name === "fly") fly(data);
     if (onStage && name === "rest") rest();

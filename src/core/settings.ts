@@ -20,7 +20,31 @@ export type Settings = {
   // "mail: false" stops the announcements of important emails.
   // "portfolioReportAt": when the daily portfolio report is said, as "HH:MM". "" switches it off.
   initiative?: { enabled?: boolean; minutesBefore?: number; quietHours?: [number, number]; mail?: boolean; portfolioReportAt?: string };
+  // The desk device. See deviceSettings() below for what each one means.
+  device?: Partial<DeviceSettings>;
 };
+
+export const DEVICE_VOICES = ["marin", "cedar", "coral", "sage", "ash"] as const;
+export type DeviceSettings = {
+  volume: number;            // the speaker, 0 to 100
+  muted: boolean;            // true: the microphone hears nothing
+  voice: string;             // "" means the voice the computer uses
+  language: "he" | "auto";   // "he": always Hebrew. "auto": the language he speaks
+};
+
+/** The device's settings with everything filled in and kept inside its limits. */
+export function fillDeviceSettings(given: Partial<DeviceSettings> = {}): DeviceSettings {
+  const volume = Number(given.volume);
+  return {
+    volume: Number.isFinite(volume) ? Math.min(100, Math.max(0, Math.round(volume))) : 90,
+    muted: given.muted === true,
+    voice: (DEVICE_VOICES as readonly string[]).includes(String(given.voice)) ? String(given.voice) : "",
+    language: given.language === "auto" ? "auto" : "he",
+  };
+}
+export async function deviceSettings(): Promise<DeviceSettings> {
+  return fillDeviceSettings((await loadSettings()).device);
+}
 
 /**
  * The rule for meeting rooms. A room is allowed only when we can tell it is in
