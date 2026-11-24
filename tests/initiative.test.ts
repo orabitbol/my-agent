@@ -131,3 +131,91 @@ test("initiative: an important email is announced when it arrives, not when it w
   assert.equal(calls.length, before);
   settings({});
 });
+
+const { portfolioSummary } = await import("../src/core/initiative.js");
+const { getPortfolioToday } = await import("../src/core/tools/portfolio.js");
+
+const portfolio = {
+  asOf: { dataDate: "2026-11-23", usMarketOpen: false, valuationIsLive: false },
+  portfolio: { valueUsd: 50000, today: { twrPct: 0.84, gainUsd: 420 } },
+  positions: [
+    { symbol: "NVDA", kind: "stock", valueUsd: 9000, dayChangePct: 3.12 },
+    { symbol: "TSLA", kind: "stock", valueUsd: 4000, dayChangePct: -2.4 },
+    { symbol: "AAPL", kind: "stock", valueUsd: 8000, dayChangePct: 0.3 },
+    { symbol: "SPY 261218C00600000", kind: "option", valueUsd: 700, dayChangePct: 40 },
+  ],
+  upcoming: {
+    earnings: [{ symbol: "AAPL", date: "2026-11-25", daysAway: 1 }, { symbol: "MSFT", date: "2026-12-04", daysAway: 10 }],
+    optionExpiries: [{ symbol: "SPY 261127C00600000", underlying: "SPY", expiry: "2026-11-27", daysToExpiry: 2 }],
+  },
+  news: { holdings: [], market: [] },
+};
+
+test("portfolio: read from the user's own site with the secret key, and never without it", async () => {
+  delete process.env.POSITIONHERO_AGENT_KEY;
+  await assert.rejects(getPortfolioToday.run({}), /POSITIONHERO_AGENT_KEY is missing/);
+
+  process.env.POSITIONHERO_AGENT_KEY = "k".repeat(64);
+  const calls = fakeNetwork({ "positionhero.com/api/agent/daily": () => portfolio });
+  assert.deepEqual(await getPortfolioToday.run({}), portfolio);
+  assert.equal(calls[0]!.url, "https://www.positionhero.com/api/agent/daily");
+  assert.equal(calls[0]!.headers.Authorization, "Bearer " + "k".repeat(64));
+
+  // Each way the site can say no becomes a sentence the agent can explain.
+  for (const [status, message] of [[401, /refused the key/], [503, /not set up for the agent/], [404, /has to be deployed/], [500, /error \(500\)/]] as const) {
+    fakeNetwork({ "positionhero.com": () => new Response("{}", { status }) });
+    await assert.rejects(getPortfolioToday.run({}), message);
+  }
+  // The tool only reads, and it never asks for approval because nothing changes.
+  assert.equal(getPortfolioToday.needsApproval, undefined);
+  assert.match(getPortfolioToday.description, /never tell him to buy, sell or hold/);
+  delete process.env.POSITIONHERO_AGENT_KEY;
+});
+
+test("portfolio report: said once in the morning after a trading day, as short facts", async () => {
+  assert.equal(
+    portfolioSummary(portfolio as never),
+    "דוח יומי: התיק עלה 0.8% ביום המסחר האחרון. בולטות: NVDA +3.1%, TSLA -2.4%. דוח רבעוני בימים הקרובים: AAPL. אופציות שפוקעות בימים הקרובים: SPY.",
+  );
+  assert.equal(portfolioSummary({ ...portfolio, portfolio: { valueUsd: 1, today: { twrPct: -1.26, gainUsd: -5 } }, positions: [], upcoming: { earnings: [], optionExpiries: [] } } as never), "דוח יומי: התיק ירד 1.3% ביום המסחר האחרון.");
+  assert.equal(portfolioSummary({ ...portfolio, portfolio: { valueUsd: 1, today: null }, positions: [], upcoming: { earnings: [], optionExpiries: [] } } as never), "דוח יומי של התיק.");
+
+  settings({ initiative: { mail: false } });
+  connect({});
+  process.env.POSITIONHERO_AGENT_KEY = "k".repeat(64);
+  const calls = fakeNetwork({ "positionhero.com": () => portfolio });
+  const texts = async (initiative: InstanceType<typeof Initiative>) => (await initiative.check()).map((nudge) => nudge.text);
+
+  // 24.11.2026 is a Tuesday. Before 08:30 nothing; at 08:30 the report; later the same day not again.
+  const time = clock(8, 20);
+  const initiative = new Initiative(time.now);
+  assert.deepEqual(await texts(initiative), []);
+  time.forward(10);
+  assert.match((await texts(initiative))[0]!, /^דוח יומי: התיק עלה 0\.8%/);
+  time.forward(5);
+  assert.deepEqual(await texts(initiative), []);
+  assert.equal(calls.length, 1);
+
+  // Opened long after the set time: today's report is skipped, not said at noon.
+  assert.deepEqual(await texts(new Initiative(clock(12, 0).now)), []);
+  // His own hour.
+  settings({ initiative: { mail: false, portfolioReportAt: "12:00" } });
+  assert.equal((await texts(new Initiative(clock(12, 0).now))).length, 1);
+  // Switched off, and the mornings after a weekend in New York.
+  settings({ initiative: { mail: false, portfolioReportAt: "" } });
+  assert.deepEqual(await texts(new Initiative(clock(8, 30).now)), []);
+  settings({ initiative: { mail: false } });
+  const monday = new Date(2026, 10, 23, 8, 30);
+  assert.deepEqual(await texts(new Initiative(() => monday)), []);
+  // The site is down: silence, and no retry every minute.
+  const failing = fakeNetwork({ "positionhero.com": () => new Response("{}", { status: 500 }) });
+  const down = clock(8, 30);
+  const quiet = new Initiative(down.now);
+  assert.deepEqual(await texts(quiet), []);
+  down.forward(1);
+  assert.deepEqual(await texts(quiet), []);
+  assert.equal(failing.length, 1);
+
+  delete process.env.POSITIONHERO_AGENT_KEY;
+  settings({});
+});

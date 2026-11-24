@@ -8,6 +8,7 @@ import { createEmailDraft, readEmail, searchEmails } from "./mail.js";
 import { findPeople } from "./people.js";
 import { findFreeRooms } from "./rooms.js";
 import { forget, remember } from "./memory.js";
+import { getPortfolioToday } from "./portfolio.js";
 
 export const tools: Tool[] = [
   getCurrentTime,
@@ -20,4 +21,5 @@ export const tools: Tool[] = [
   createEmailDraft,
   remember,
   forget,
+  getPortfolioToday,
 ];

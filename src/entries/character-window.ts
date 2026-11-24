@@ -36,7 +36,8 @@ export type CharacterWindow = {
   say: (text: string) => void;
 };
 
-const SAY_MS = 9000; // how long a speech bubble stays
+// How long a speech bubble stays: long enough to read it, whatever its length.
+const sayMs = (text: string) => Math.min(20_000, Math.max(9000, 4000 + text.length * 90));
 
 export async function openCharacter(options: CharacterOptions): Promise<CharacterWindow> {
   const settings = await loadSettings();
@@ -333,7 +334,7 @@ export async function openCharacter(options: CharacterOptions): Promise<Characte
       stage.webContents.send("character:event", "say", { text, x: here.x + SIZE / 2 - area.x, y: here.y + (SIZE - BODY) / 2 - area.y, width: area.width });
       stage.showInactive();
       tell("land"); // a small move, so the eye catches it
-      await wait(SAY_MS);
+      await wait(sayMs(text));
     } finally {
       talking = false;
       if (!stage.isDestroyed()) {

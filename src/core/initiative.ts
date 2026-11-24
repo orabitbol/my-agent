@@ -1,5 +1,6 @@
 // Initiative: the agent turns to the user by itself when there is a reason.
-// Two reasons so far: a meeting is about to start, and an important email arrived.
+// Three reasons so far: a meeting is about to start, an important email arrived,
+// and the daily report on the investment portfolio.
 //
 // This costs nothing to run: it reads the calendar and the inbox and uses no
 // model. Which email is "important" is Gmail's own judgment, not ours. It only
@@ -12,6 +13,8 @@
 import { loadSettings } from "./settings.js";
 import { getCalendarEvents } from "./tools/calendar.js";
 import { searchEmails } from "./tools/mail.js";
+import { fetchPortfolioToday } from "./tools/portfolio.js";
+import type { PortfolioToday } from "./tools/portfolio.js";
 
 export type Nudge = { id: string; text: string };
 
@@ -19,7 +22,9 @@ type CalendarEvent = { account: string; title: string; start: string; allDay: bo
 
 type Email = { account: string; id: string; from: string; subject: string };
 
-const DEFAULTS = { enabled: true, minutesBefore: 10, quietHours: [22, 7] as [number, number], mail: true };
+// The report is said in the morning, Israel time, about the trading day that ended the night before.
+const DEFAULTS = { enabled: true, minutesBefore: 10, quietHours: [22, 7] as [number, number], mail: true, portfolioReportAt: "08:30" };
+const REPORT_WINDOW_MIN = 90; // if the app opens later than this after the set time, today's report is skipped
 // Unread, in the main inbox, and marked important by Gmail itself.
 const IMPORTANT_MAIL = "is:unread is:important in:inbox category:primary newer_than:1d";
 const REFRESH_MS = 3 * 60_000; // how often the calendar is read again
@@ -41,6 +46,28 @@ export function isQuiet(hour: number, [from, to]: [number, number]): boolean {
 const senderName = (from: string) => from.replace(/<[^>]*>/g, "").replace(/["']/g, "").trim() || from.replace(/[<>]/g, "").trim();
 const short = (value: string, length: number) => (value.length > length ? value.slice(0, length - 1).trimEnd() + "…" : value);
 
+const signed = (percent: number) => `${percent > 0 ? "+" : ""}${percent.toFixed(1)}%`;
+
+/** The daily report, short enough for a speech bubble: facts only. */
+export function portfolioSummary(data: PortfolioToday): string {
+  const parts: string[] = [];
+  const change = data.portfolio.today?.twrPct;
+  parts.push(
+    change == null ? "דוח יומי של התיק" : change === 0 ? "דוח יומי: התיק בלי שינוי ביום המסחר האחרון" : `דוח יומי: התיק ${change > 0 ? "עלה" : "ירד"} ${Math.abs(change).toFixed(1)}% ביום המסחר האחרון`,
+  );
+  // The holdings that moved the most, up or down.
+  const movers = data.positions
+    .filter((position) => position.kind === "stock" && position.dayChangePct != null && Math.abs(position.dayChangePct) >= 1)
+    .sort((a, b) => Math.abs(b.dayChangePct!) - Math.abs(a.dayChangePct!))
+    .slice(0, 3);
+  if (movers.length > 0) parts.push(`בולטות: ${movers.map((position) => `${position.symbol} ${signed(position.dayChangePct!)}`).join(", ")}`);
+  const earnings = data.upcoming.earnings.filter((event) => event.daysAway != null && event.daysAway <= 2).map((event) => event.symbol);
+  if (earnings.length > 0) parts.push(`דוח רבעוני בימים הקרובים: ${earnings.slice(0, 3).join(", ")}`);
+  const expiring = data.upcoming.optionExpiries.filter((option) => option.daysToExpiry <= 2).map((option) => option.underlying);
+  if (expiring.length > 0) parts.push(`אופציות שפוקעות בימים הקרובים: ${[...new Set(expiring)].slice(0, 3).join(", ")}`);
+  return parts.join(". ") + ".";
+}
+
 const place = (location: string | null) => (location && location.length <= 40 && !/https?:\/\//.test(location) ? ` (${location})` : "");
 
 export class Initiative {
@@ -49,6 +76,7 @@ export class Initiative {
   private said = new Set<string>();
   private mailReadAt = 0;
   private knownMail: Set<string> | null = null; // null until the inbox was read once
+  private reportDay = ""; // the day the portfolio report was last said
 
   constructor(private now: () => Date = () => new Date()) {}
 
@@ -60,6 +88,7 @@ export class Initiative {
 
     const nudges: Nudge[] = [];
     if (settings.mail) nudges.push(...(await this.newMail(now)));
+    nudges.push(...(await this.portfolioReport(now, settings.portfolioReportAt)));
 
     if (now.getTime() - this.readAt >= REFRESH_MS) {
       try {
@@ -82,6 +111,22 @@ export class Initiative {
       nudges.push({ id, text: `${minutes === 1 ? "בעוד דקה" : `בעוד ${minutes} דקות`}: ${event.title}${place(event.location)}` });
     }
     return nudges;
+  }
+
+  // The daily report on the portfolio: once a day, at the set time, after a trading day.
+  private async portfolioReport(now: Date, at: string): Promise<Nudge[]> {
+    const time = /^(\d{1,2}):(\d{2})$/.exec(at);
+    if (!time || !process.env.POSITIONHERO_AGENT_KEY) return [];
+    const day = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    const late = now.getHours() * 60 + now.getMinutes() - (Number(time[1]) * 60 + Number(time[2]));
+    // Sunday and Monday mornings follow days with no trading in New York.
+    if (this.reportDay === day || late < 0 || late > REPORT_WINDOW_MIN || now.getDay() === 0 || now.getDay() === 1) return [];
+    this.reportDay = day; // one try a day: a failure is not retried every minute
+    try {
+      return [{ id: `portfolio|${day}`, text: portfolioSummary(await fetchPortfolioToday()) }];
+    } catch {
+      return []; // the site is down or not set up: stay silent
+    }
   }
 
   // Important emails that arrived since the last look. What was already waiting

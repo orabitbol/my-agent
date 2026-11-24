@@ -18,7 +18,8 @@ export type Settings = {
   // When the agent turns to the user by itself. "minutesBefore": how long before
   // a meeting. "quietHours": [from, to], the hours in which it stays silent.
   // "mail: false" stops the announcements of important emails.
-  initiative?: { enabled?: boolean; minutesBefore?: number; quietHours?: [number, number]; mail?: boolean };
+  // "portfolioReportAt": when the daily portfolio report is said, as "HH:MM". "" switches it off.
+  initiative?: { enabled?: boolean; minutesBefore?: number; quietHours?: [number, number]; mail?: boolean; portfolioReportAt?: string };
 };
 
 /**
