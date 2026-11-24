@@ -22,11 +22,7 @@ function fit(image: Electron.NativeImage, maxBytes: number): { jpeg: Buffer; wid
   return smallest;
 }
 
-// A picture of one screen, plus what is needed to turn a point in the picture
-// back into a point on the real screen: the picture's size and the screen's place.
-export type ScreenCapture = Screenshot & { width: number; height: number; bounds: Electron.Rectangle };
-
-export async function captureScreens(maxBytes: number): Promise<ScreenCapture[]> {
+export async function captureScreens(maxBytes: number): Promise<Screenshot[]> {
   if (process.platform === "darwin" && systemPreferences.getMediaAccessStatus("screen") !== "granted") {
     // Asking for the screens makes macOS show its permission question the first time.
     await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1, height: 1 } }).catch(() => {});
@@ -43,14 +39,10 @@ export async function captureScreens(maxBytes: number): Promise<ScreenCapture[]>
   return sources.map((source, index) => {
     const notes = [source.display_id === primary ? "the primary screen" : "", source.display_id === withPointer ? "the mouse pointer is on this screen" : ""].filter(Boolean);
     const picture = fit(source.thumbnail, maxBytes);
-    const display = screen.getAllDisplays().find((candidate) => String(candidate.id) === source.display_id) ?? screen.getPrimaryDisplay();
     return {
       id: source.display_id || source.id,
       label: `Current screenshot: screen ${index + 1} of ${sources.length}${notes.length ? ` (${notes.join("; ")})` : ""}.`,
       image: "data:image/jpeg;base64," + picture.jpeg.toString("base64"),
-      width: picture.width,
-      height: picture.height,
-      bounds: display.bounds,
     };
   });
 }
