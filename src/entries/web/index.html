@@ -79,7 +79,7 @@
   .setting + .setting { border-top: 1px solid var(--separator); }
   .setting-name { flex: 1; }
   .setting input[type="range"] { width: 40%; accent-color: var(--accent); }
-  .setting output { width: var(--space-6); text-align: end; color: var(--label-secondary); font-variant-numeric: tabular-nums; }
+  .setting output { min-width: var(--space-6); text-align: end; color: var(--label-secondary); font-variant-numeric: tabular-nums; }
   .setting select { font: inherit; color: var(--label); background: var(--fill); border: 0; border-radius: var(--radius-small); padding: var(--space-1) var(--space-2); }
   .switch {
     appearance: none; flex: none; margin: 0; width: var(--space-8); height: var(--space-5); border-radius: var(--radius-full);
@@ -150,6 +150,8 @@
   .approval .button.primary { background: var(--accent); color: var(--label-on-accent); }
   .approval .button.primary:active { background: var(--accent-pressed); }
   .approval-status { font-size: var(--text-callout); line-height: var(--lh-callout); color: var(--label-secondary); }
+  .approval-status.done { color: var(--green); font-weight: var(--weight-medium); }
+  .approval-status.failed { color: var(--red); font-weight: var(--weight-medium); }
 
   /* The direction rules. Every line decides its own direction from its first
      real letter: Hebrew lines run right to left, English lines left to right.
@@ -387,6 +389,9 @@
     <button class="button icon-button" id="settings-close" type="button" title="סגור" aria-label="סגור"></button>
   </header>
   <p class="sheet-status" id="settings-status"></p>
+  <div class="card" id="senses-card" hidden>
+    <div class="setting"><span class="setting-name">טמפרטורה ולחות</span><output id="sense-climate"></output></div>
+  </div>
   <div class="card">
     <label class="setting"><span class="setting-name">עוצמת קול</span>
       <input type="range" id="set-volume" min="0" max="100" step="5"><output id="set-volume-value"></output></label>
@@ -399,11 +404,7 @@
     <label class="setting"><span class="setting-name">קול</span>
       <select id="set-voice"></select></label>
   </div>
-  <div class="card">
-    <label class="setting"><span class="setting-name">שתי מחיאות כפיים מעירות אותו</span>
-      <input type="checkbox" class="switch" id="set-claps"></label>
-  </div>
-  <p class="sheet-note">נגיעה במסך המכשיר תמיד קוראת לו ומחזירה אותו. עוצמה, השתקה ומחיאות כפיים משתנות במכשיר תוך כמה שניות. שפה וקול נכנסים לתוקף בשיחה הבאה.</p>
+  <p class="sheet-note">נגיעה במסך המכשיר קוראת לו ומחזירה אותו. עוצמה והשתקה משתנות במכשיר תוך כמה שניות. שפה וקול נכנסים לתוקף בשיחה הבאה.</p>
 </dialog>
 
 <aside aria-label="חשבונות, זיכרון ופעילות">
@@ -490,6 +491,7 @@
     forget: { label: "מחק מהזיכרון", icon: "memory", color: "gray" },
     get_portfolio_today: { label: "בדק את תיק ההשקעות", icon: "briefcase", color: "green" },
     move_character: { label: "עבר למסך אחר", icon: "check", color: "blue" },
+    get_room: { label: "בדק את החדר", icon: "check", color: "green" },
   };
 
   const thread = document.getElementById("thread");
@@ -674,7 +676,10 @@
 
     const actions = element("div", "approval-actions");
     const answer = async (approved) => {
-      actions.replaceWith(element("div", "approval-status", approved ? "אושר" : "בוטל"));
+      const status = element("div", "approval-status", approved ? "אושר, מבצע…" : "בוטל");
+      actions.replaceWith(status);
+      // The moment the action itself finishes, the card says so. The agent's words come after.
+      if (approved) waitingCards.push({ tool: request.tool, status });
       if (characterState === "approval") showCharacter("thinking");
       await post("/api/approve", { id: request.id, approved }).catch(() => {});
     };
@@ -772,22 +777,27 @@
   const setMuted = document.getElementById("set-muted");
   const setLanguage = document.getElementById("set-language");
   const setVoice = document.getElementById("set-voice");
-  const setClaps = document.getElementById("set-claps");
   const VOICE_NAMES = { "": "כמו במחשב", marin: "Marin", cedar: "Cedar", coral: "Coral", sage: "Sage", ash: "Ash" };
   function showDevice(device) {
     const state = !device.enabled ? "off" : device.inCall ? "call" : device.connected ? "on" : "off";
-    const text = !device.enabled ? "המכשיר לא הוגדר" : device.inCall ? "המכשיר בשיחה" : device.connected ? "המכשיר מחובר" : "המכשיר לא מחובר";
+    const base = !device.enabled ? "המכשיר לא הוגדר" : device.inCall ? "המכשיר בשיחה" : device.connected ? "המכשיר מחובר" : "המכשיר לא מחובר";
+    // The button on the device itself switches its microphones off; say so wherever its state is shown.
+    const text = device.buttonMuted ? base + " · מושתק בכפתור" : base;
     deviceLight.hidden = !device.enabled;
     deviceLight.dataset.state = state;
     document.getElementById("device-light-text").textContent = text;
     document.getElementById("settings-status").textContent = text + ".";
+    // What the device senses around it, when its base has the sensors.
+    const sensed = device.senses ?? {};
+    document.getElementById("senses-card").hidden = sensed.temperature == null;
+    document.getElementById("sense-climate").textContent =
+      sensed.temperature == null ? "לא ידוע" : `${sensed.temperature}° · ${sensed.humidity ?? "?"}%`;
     // Do not move a control he is holding right now.
     if (settingsSheet.contains(document.activeElement) && document.activeElement !== document.getElementById("settings-close")) return;
     if (setVoice.options.length === 0) for (const voice of ["", ...device.voices]) setVoice.add(new Option(VOICE_NAMES[voice] ?? voice, voice));
     setVolume.value = device.settings.volume;
     document.getElementById("set-volume-value").textContent = device.settings.volume;
     setMuted.checked = device.settings.muted;
-    setClaps.checked = device.settings.claps;
     setLanguage.value = device.settings.language;
     setVoice.value = device.settings.voice;
   }
@@ -809,7 +819,6 @@
   setVolume.addEventListener("input", () => { document.getElementById("set-volume-value").textContent = setVolume.value; });
   setVolume.addEventListener("change", () => saveDevice({ volume: Number(setVolume.value) }));
   setMuted.addEventListener("change", () => saveDevice({ muted: setMuted.checked }));
-  setClaps.addEventListener("change", () => saveDevice({ claps: setClaps.checked }));
   setLanguage.addEventListener("change", () => saveDevice({ language: setLanguage.value }));
   setVoice.addEventListener("change", () => saveDevice({ voice: setVoice.value }));
   document.getElementById("settings-open").addEventListener("click", () => { settingsSheet.showModal(); loadDevice(); });
@@ -947,8 +956,17 @@
   }
 
   // What the page does when the agent used a tool, in text or in voice.
+  // Approved actions that have not reported back yet, oldest first.
+  const waitingCards = [];
   function onToolEvent(eventData) {
     addToolCall(eventData);
+    const at = waitingCards.findIndex((card) => card.tool === eventData.tool);
+    if (at !== -1) {
+      const [card] = waitingCards.splice(at, 1);
+      card.status.textContent = eventData.ok ? "בוצע" : "לא בוצע";
+      card.status.classList.toggle("done", eventData.ok === true);
+      card.status.classList.toggle("failed", eventData.ok !== true);
+    }
     if (eventData.tool === "remember" || eventData.tool === "forget") loadMemory();
   }
 

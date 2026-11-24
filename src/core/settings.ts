@@ -30,7 +30,7 @@ export type DeviceSettings = {
   muted: boolean;            // true: the microphone hears nothing
   voice: string;             // "" means the voice the computer uses
   language: "he" | "auto";   // "he": always Hebrew. "auto": the language he speaks
-  claps: boolean;            // true: two claps near the device wake the character
+  claps: boolean;            // true: two claps near the device wake the character. Off unless switched on: it is not reliable yet
 };
 
 /** The device's settings with everything filled in and kept inside its limits. */
@@ -41,7 +41,7 @@ export function fillDeviceSettings(given: Partial<DeviceSettings> = {}): DeviceS
     muted: given.muted === true,
     voice: (DEVICE_VOICES as readonly string[]).includes(String(given.voice)) ? String(given.voice) : "",
     language: given.language === "auto" ? "auto" : "he",
-    claps: given.claps !== false,
+    claps: given.claps === true,
   };
 }
 export async function deviceSettings(): Promise<DeviceSettings> {

@@ -23,6 +23,7 @@ import type { SidebandOptions } from "../core/voice-sideband.js";
 import { timingSafeEqual, createHash } from "node:crypto";
 import { setMover } from "../core/place.js";
 import { trace, traceLines } from "../core/trace.js";
+import { reportSenses, senses } from "../core/senses.js";
 import type { ServerResponse } from "node:http";
 
 // Listen on this computer only. Nothing on the network can reach the agent.
@@ -171,6 +172,7 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
   let place: "computer" | "device" = "computer";
   let onDevice = false; // what the device is told: draw the character or stay dark
   let wanted = false;   // the user's decision: the character should be on the device
+  let buttonMuted = false; // the mute button on the device itself is on
   let arriving: NodeJS.Timeout | undefined;
   // What the device is told changes: wake the questions it left open with us.
   let deviceVersion = 1;
@@ -259,10 +261,40 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         const touched = request.method === "POST" && asked.pathname === "/device/touch";
         const woken = request.method === "POST" && asked.pathname === "/device/wake";
         const notes = request.method === "POST" && asked.pathname === "/device/log";
-        if (!asksSettings && !touched && !woken && !notes && (request.method !== "POST" || request.url !== "/device/voice")) return void response.writeHead(404).end();
+        const sensed = request.method === "POST" && asked.pathname === "/device/sense";
+        const muteButton = request.method === "POST" && asked.pathname === "/device/mute";
+        if (!asksSettings && !touched && !woken && !notes && !sensed && !muteButton && (request.method !== "POST" || request.url !== "/device/voice")) return void response.writeHead(404).end();
         const given = (request.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
         if (!given || !sameKey(given)) return void response.writeHead(401).end();
         lastSeen = Date.now();
+
+        // The mute button on the device itself: the microphones are off in the hardware.
+        if (muteButton) {
+          let text = "";
+          for await (const chunk of request) {
+            text += chunk;
+            if (text.length > 200) break;
+          }
+          const now = /"muted"\s*:\s*true/.test(text);
+          if (now !== buttonMuted) trace("device", now ? "muted with the button on the device" : "the mute button was released");
+          buttonMuted = now;
+          return void response.writeHead(204).end();
+        }
+
+        // What the device senses: the room's temperature and humidity.
+        if (sensed) {
+          let text = "";
+          for await (const chunk of request) {
+            text += chunk;
+            if (text.length > 1000) break;
+          }
+          try {
+            reportSenses(JSON.parse(text) as Record<string, unknown>);
+          } catch {
+            return void response.writeHead(400).end();
+          }
+          return void response.writeHead(204).end();
+        }
 
         // The device's own log lines, so they can be read here instead of in a terminal.
         if (notes) {
@@ -426,7 +458,7 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
           await saveSettings(settings);
           tellDevice();
         }
-        sendJson(200, { enabled: deviceStatus !== null, ...(deviceStatus?.() ?? { connected: false, inCall: false }), characterOn: place, settings: await deviceSettings(), voices: DEVICE_VOICES });
+        sendJson(200, { enabled: deviceStatus !== null, ...(deviceStatus?.() ?? { connected: false, inCall: false }), characterOn: place, buttonMuted: deviceStatus?.().connected === true && buttonMuted, senses: senses(), settings: await deviceSettings(), voices: DEVICE_VOICES });
         return;
       }
 

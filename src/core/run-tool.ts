@@ -26,6 +26,9 @@ export type TurnHandlers = { onToolCall?: ToolCallListener; approve?: Approver }
  */
 export async function runTool(tools: Tool[], name: string, rawArgs: string, handlers: TurnHandlers = {}): Promise<unknown> {
   const started = Date.now();
+  // When the checks before the action were done, and when the user had answered.
+  let prepared = started;
+  let decided = started;
   let args: unknown = rawArgs;
   let ok = false;
   let result: unknown;
@@ -40,7 +43,10 @@ export async function runTool(tools: Tool[], name: string, rawArgs: string, hand
       args = toolArgs; // log and show what will really run
     }
 
-    if (tool.needsApproval && !(await isApproved(tool, toolArgs, handlers.approve))) {
+    prepared = Date.now();
+    const approved = !tool.needsApproval || (await isApproved(tool, toolArgs, handlers.approve));
+    decided = Date.now();
+    if (!approved) {
       result = { declined: true, message: "The user did not approve this action. Do not try again unless the user asks." };
     } else {
       result = await tool.run(toolArgs);
@@ -53,7 +59,11 @@ export async function runTool(tools: Tool[], name: string, rawArgs: string, hand
   const event = { tool: name, args, ok, result, ms: Date.now() - started };
   // The technical log gets the fact and any error, never the content.
   const failure = !ok && result && typeof result === "object" && "error" in result ? `: ${String((result as { error: unknown }).error)}` : "";
-  trace("tool", `${name} ${ok ? "ok" : failure ? "failed" : "not run"} (${event.ms} ms)${failure}`);
+  // Three separate times, so a slow action can be told from a slow answer:
+  // getting ready, waiting for the user's yes, and the action itself.
+  const waited = decided - prepared;
+  const timing = `ready in ${prepared - started} ms${waited > 50 ? `, waited ${waited} ms for approval` : ""}, ran ${Date.now() - decided} ms`;
+  trace("tool", `${name} ${ok ? "ok" : failure ? "failed" : "not run"} (${timing})${failure}`);
   await logToolCall(event);
   handlers.onToolCall?.(event);
   return result;

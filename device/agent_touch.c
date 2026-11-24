@@ -18,6 +18,7 @@
 #include "esp_board_device.h"
 #include "esp_board_manager_includes.h"
 #include "settings.h"
+#include "agent_parts.h"
 
 #define TAG "AGENT_TOUCH"
 #define TOUCH_NAME "lcd_touch"
@@ -63,8 +64,7 @@ static void touch_task(void *arg)
     }
     if (handles == NULL) {
         ESP_LOGE(TAG, "The touch sensor did not start");
-        vTaskDelete(NULL);
-        return;
+        agent_park();
     }
     esp_lcd_touch_handle_t touch = handles->touch_handle;
     ESP_LOGI(TAG, "Touch is ready");
@@ -88,7 +88,9 @@ static void touch_task(void *arg)
         if (++down_for >= 2 && !told) {
             told = true;
             ESP_LOGI(TAG, "Touched");
-            tell_agent();
+            if (agent_online()) {
+                tell_agent();
+            }
             vTaskDelay(pdMS_TO_TICKS(600));
         }
     }
@@ -96,5 +98,5 @@ static void touch_task(void *arg)
 
 void agent_touch_start(void)
 {
-    xTaskCreatePinnedToCore(touch_task, "agent_touch", 6 * 1024, NULL, 4, NULL, 0);
+    agent_task(touch_task, "agent_touch", 6 * 1024, 4);
 }

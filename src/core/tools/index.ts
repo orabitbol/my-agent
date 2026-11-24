@@ -10,6 +10,7 @@ import { findFreeRooms } from "./rooms.js";
 import { forget, remember } from "./memory.js";
 import { getPortfolioToday } from "./portfolio.js";
 import { moveCharacter } from "./move.js";
+import { getRoom } from "./room.js";
 
 export const tools: Tool[] = [
   getCurrentTime,
@@ -24,4 +25,5 @@ export const tools: Tool[] = [
   forget,
   getPortfolioToday,
   moveCharacter,
+  getRoom,
 ];

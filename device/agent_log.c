@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "settings.h"
+#include "agent_parts.h"
 
 #define LINE_BYTES 128
 #define LINES_KEPT 48
@@ -51,7 +52,7 @@ static int also_keep(const char *format, va_list args)
     return printed_before ? printed_before(format, args) : vprintf(format, args);
 }
 
-static bool send(const char *text, int length)
+static bool send_lines(const char *text, int length)
 {
     esp_http_client_config_t cfg = {
         .url = AGENT_LOG_URL,
@@ -92,7 +93,7 @@ static void log_task(void *arg)
             }
         } while (xQueueReceive(waiting, line, pdMS_TO_TICKS(200)) == pdTRUE);
 
-        while (!send(batch, used)) {
+        while (!agent_online() || !send_lines(batch, used)) {
             vTaskDelay(pdMS_TO_TICKS(2000)); /* the computer is not there yet: keep this message and try again */
         }
     }
@@ -100,10 +101,10 @@ static void log_task(void *arg)
 
 void agent_log_start(void)
 {
-    waiting = xQueueCreate(LINES_KEPT, LINE_BYTES);
+    waiting = xQueueCreateWithCaps(LINES_KEPT, LINE_BYTES, MALLOC_CAP_SPIRAM);
     if (waiting == NULL) {
         return;
     }
     printed_before = esp_log_set_vprintf(also_keep);
-    xTaskCreatePinnedToCore(log_task, "agent_log", 6 * 1024, NULL, 2, NULL, 0);
+    agent_task(log_task, "agent_log", 6 * 1024, 2);
 }

@@ -1,6 +1,7 @@
 // The core of the agent. It knows nothing about terminals, browsers or voice:
 // it gets the user's text, talks to the model, runs tools, and returns the reply.
 
+import { trace } from "./trace.js";
 import OpenAI from "openai";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { config } from "./config.js";
@@ -41,6 +42,7 @@ export class Agent {
     // add the results to the history, and ask again. If it does not, we are done.
     const instructions = await buildInstructions();
     for (let step = 0; step < MAX_STEPS; step++) {
+      const asked = Date.now();
       const response = await this.client.responses.create({
         model: config.model,
         instructions,
@@ -53,6 +55,10 @@ export class Agent {
           strict: true,
         })),
       });
+
+      // How long the model itself took, so a slow model can be told from a slow tool.
+      const wants = response.output.filter((item) => item.type === "function_call").map((item) => (item as { name: string }).name);
+      trace("model", `answered in ${Date.now() - asked} ms${wants.length ? `, asks for: ${wants.join(", ")}` : ", with the reply"}`);
 
       // Keep everything the model produced (text, tool requests) in the history.
       this.history.push(...(response.output as ResponseInputItem[]));

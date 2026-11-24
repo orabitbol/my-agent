@@ -24,7 +24,7 @@
 #define AREA_Y 24
 #define AREA_W 192
 #define AREA_H 192
-#define STRIP_ROWS 16 /* AREA_W * STRIP_ROWS * 2 bytes must fit one transfer (6400) */
+#define STRIP_ROWS 8  /* small strips: the two buffers that carry them must come from the scarce fast memory */
 
 #define CENTER_X 160.0f
 #define CENTER_Y 120.0f
@@ -171,13 +171,34 @@ static face_frame_t frame_at(face_state_t state, bool here, uint32_t now_ms, uin
 #include "esp_board_manager.h"
 #include "esp_board_device.h"
 #include "esp_board_manager_includes.h"
+#include "agent_parts.h"
 
 #define TAG "AGENT_FACE"
 #define LCD_NAME "display_lcd"
 #define LIGHT_NAME "lcd_brightness"
 
+/* One buffer holds a strip of the character (192 x 8) or four full rows of black: 3072 bytes at most. */
+#define CLEAR_ROWS 4
+#define BUFFER_BYTES (AREA_W * STRIP_ROWS * 2)
+static uint16_t *buffers[2];
+
 static volatile bool screen_started; /* the screen has been through its reset (or failed to start) */
+static volatile bool deaf; /* the mute button on the device is on: it cannot hear */
+/* A passing reaction to being moved (agent_motion.c): 1 dizzy, 2 surprised. */
+static volatile int reaction;
+static volatile uint32_t reacted_at;
+
+void agent_face_react(int kind)
+{
+    reaction = kind;
+    reacted_at = (uint32_t)(esp_timer_get_time() / 1000);
+}
 static volatile bool want_here;
+
+void agent_face_set_deaf(bool is_deaf)
+{
+    deaf = is_deaf;
+}
 
 /* The touch sensor shares the screen's reset line, so it can only be looked for after this. */
 bool agent_face_started(void)
@@ -219,8 +240,7 @@ static void face_task(void *arg)
     screen_started = true;
     if (lcd_started != ESP_OK) {
         ESP_LOGE(TAG, "The screen did not start");
-        vTaskDelete(NULL);
-        return;
+        agent_park();
     }
     if (esp_board_device_init(LIGHT_NAME) != ESP_OK) {
         ESP_LOGW(TAG, "The screen's light did not start");
@@ -229,8 +249,7 @@ static void face_task(void *arg)
     dev_display_lcd_config_t *lcd_cfg = NULL;
     if (esp_board_manager_get_device_handle(LCD_NAME, (void **)&lcd) != ESP_OK || lcd == NULL || lcd->panel_handle == NULL) {
         ESP_LOGE(TAG, "No screen to draw on");
-        vTaskDelete(NULL);
-        return;
+        agent_park();
     }
     bool swap = true;
     if (esp_board_manager_get_device_config(LCD_NAME, (void **)&lcd_cfg) == ESP_OK && lcd_cfg != NULL) {
@@ -238,24 +257,19 @@ static void face_task(void *arg)
     }
     esp_lcd_panel_handle_t panel = lcd->panel_handle;
 
-    /* Two small buffers, used in turns: while one is on its way to the screen, the next strip is drawn into the other. */
-    const size_t bytes = SCREEN_W * 10 * 2;
-    uint16_t *buffers[2] = {
-        heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
-        heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
-    };
+    /* Two small buffers, used in turns: while one is on its way to the screen, the next strip is drawn into the other.
+     * They were taken when the device started (agent_face_start), before the fast memory fills up. */
     if (buffers[0] == NULL || buffers[1] == NULL) {
         ESP_LOGE(TAG, "No memory for the screen");
-        vTaskDelete(NULL);
-        return;
+        agent_park();
     }
     int turn = 0;
 
     /* Start dark and black. */
     backlight(0);
-    for (int y = 0; y < SCREEN_H; y += 8) {
-        memset(buffers[turn], 0, SCREEN_W * 8 * 2);
-        esp_lcd_panel_draw_bitmap(panel, 0, y, SCREEN_W, y + 8, buffers[turn]);
+    for (int y = 0; y < SCREEN_H; y += CLEAR_ROWS) {
+        memset(buffers[turn], 0, BUFFER_BYTES);
+        esp_lcd_panel_draw_bitmap(panel, 0, y, SCREEN_W, y + CLEAR_ROWS, buffers[turn]);
         turn ^= 1;
     }
     ESP_LOGI(TAG, "The screen is ready");
@@ -280,6 +294,31 @@ static void face_task(void *arg)
             continue;
         }
         face_frame_t frame = frame_at(want_state, here, now, since);
+        uint32_t reacting = now - reacted_at;
+        if (reaction == 1 && reacting < 2200) {
+            /* Shaken: its eyes go round and round, and it sways. */
+            float spin = reacting / 1000.0f * 13.0f, fade = 1.0f - reacting / 2200.0f;
+            frame.look_x = 9.0f * fade * cosf(spin);
+            frame.look_y = 6.0f * fade * sinf(spin);
+            frame.eye_open = 0.85f;
+            frame.lift += 4.0f * fade * sinf(spin * 0.5f);
+        } else if (reaction == 2 && reacting < 1400) {
+            /* Lifted: eyes wide, a small jump. */
+            float fade = 1.0f - reacting / 1400.0f;
+            frame.eye_open = 1.0f + 0.5f * fade;
+            frame.scale *= 1.0f + 0.06f * fade;
+            frame.lift -= 5.0f * fade;
+        } else {
+            reaction = 0;
+        }
+        if (deaf) {
+            /* Muted by the button: gray, eyes nearly shut, no mouth. It is here, but it cannot hear. */
+            frame.mood = mix(GRAY, ACCENT, 0.15f);
+            frame.glow = 0.2f;
+            frame.eye_open = 0.3f;
+            frame.mouth = 0;
+            frame.look_x = frame.look_y = 0;
+        }
         for (int y = AREA_Y; y < AREA_Y + AREA_H; y += STRIP_ROWS) {
             render_strip(buffers[turn], y, STRIP_ROWS, &frame, swap);
             esp_lcd_panel_draw_bitmap(panel, AREA_X, y, AREA_X + AREA_W, y + STRIP_ROWS, buffers[turn]);
@@ -295,6 +334,8 @@ static void face_task(void *arg)
 
 void agent_face_start(void)
 {
-    xTaskCreatePinnedToCore(face_task, "agent_face", 6 * 1024, NULL, 3, NULL, 0);
+    buffers[0] = heap_caps_malloc(BUFFER_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    buffers[1] = heap_caps_malloc(BUFFER_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    agent_task(face_task, "agent_face", 6 * 1024, 3);
 }
 #endif /* FACE_PREVIEW */

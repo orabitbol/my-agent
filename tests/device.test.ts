@@ -154,7 +154,7 @@ test("device: its settings reach it through the door, and the app's light follow
   assert.equal((await call({}, "/device/settings", "GET")).status, 401);
   // Out-of-range and unknown values are brought back inside the limits; unknown names are dropped.
   const saved = await app({ volume: 250, muted: true, voice: "nobody", language: "auto", key: "x" });
-  assert.deepEqual(saved.settings, { volume: 100, muted: true, voice: "", language: "auto", claps: true });
+  assert.deepEqual(saved.settings, { volume: 100, muted: true, voice: "", language: "auto", claps: false });
 
   const asked = await call(undefined, "/device/settings", "GET");
   assert.equal(asked.status, 200);
@@ -299,4 +299,53 @@ test("device: the technical log shows what happened, including the device's own 
   assert.match(text, /\[app\] the character is wanted on the device/);
   assert.doesNotMatch(text, /\u001b/, "color codes are stripped");
   assert.doesNotMatch(text, new RegExp(KEY), "the device's key never appears");
+});
+
+test("device: the room's temperature reaches the agent, and an old or broken reading is not shown", async () => {
+  connect({ "work@example.com": [] });
+  openai();
+  const { reportSenses, resetSenses, senses } = await import("../src/core/senses.js");
+  const { getRoom } = await import("../src/core/tools/room.js");
+  resetSenses();
+  const port = nextPort++;
+  const base = await startServer(0, { agent: new Agent({ client: fakeModel([[say("x")]]).client, tools: [] }), tools: [plain], device: { port, key: KEY, connect: fakeSocket().connect } });
+  await new Promise((r) => setTimeout(r, 50));
+  const sense = (body: string, headers: Record<string, string> = { Authorization: `Bearer ${KEY}` }) => fetch(`http://127.0.0.1:${port}/device/sense`, { method: "POST", headers, body });
+
+  // Nothing reported yet: the tool says so instead of guessing.
+  await assert.rejects(() => getRoom.run({}), /not reporting/);
+
+  assert.equal((await sense("{}", {})).status, 401);
+  assert.equal((await sense("not json")).status, 400);
+  assert.equal((await sense('{"temp":23.4,"humidity":45}')).status, 204);
+  assert.deepEqual(await getRoom.run({}), { temperature_celsius: 23.4, humidity_percent: 45 });
+  const shown = (await (await fetch(`${base}/api/device`)).json()) as { senses: { temperature: number; humidity: number } };
+  assert.deepEqual(shown.senses, { temperature: 23.4, humidity: 45 });
+
+  const start = Date.now();
+  reportSenses({ temp: 22, humidity: 40 }, start);
+  assert.equal(senses(start + 5 * 60_000).temperature, null, "an old reading is not shown as current");
+  reportSenses({ temp: 900, humidity: -3 }, start);
+  assert.deepEqual(senses(start), { temperature: null, humidity: null }, "a broken reading is dropped");
+  resetSenses();
+});
+
+test("device: its own mute button shows in the app, and only while the device is there", async () => {
+  connect({ "work@example.com": [] });
+  openai();
+  const port = nextPort++;
+  const base = await startServer(0, { agent: new Agent({ client: fakeModel([[say("x")]]).client, tools: [] }), tools: [plain], device: { port, key: KEY, connect: fakeSocket().connect } });
+  await new Promise((r) => setTimeout(r, 50));
+  const auth = { Authorization: `Bearer ${KEY}` };
+  const button = (muted: boolean, headers: Record<string, string> = auth) => fetch(`http://127.0.0.1:${port}/device/mute`, { method: "POST", headers, body: JSON.stringify({ muted }) });
+  const shown = async () => ((await (await fetch(`${base}/api/device`)).json()) as { buttonMuted: boolean }).buttonMuted;
+
+  assert.equal((await button(true, {})).status, 401);
+  assert.equal(await shown(), false);
+  assert.equal((await button(true)).status, 204);
+  assert.equal(await shown(), true);
+  assert.equal((await button(false)).status, 204);
+  assert.equal(await shown(), false);
+  const { lines } = (await (await fetch(`${base}/api/trace`)).json()) as { lines: { text: string }[] };
+  assert.ok(lines.some((line) => line.text === "muted with the button on the device"));
 });
