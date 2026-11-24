@@ -46,7 +46,7 @@ test("initiative: a meeting is announced once, shortly before it starts", async 
   assert.deepEqual(await initiative.check(), []);
 
   // The calendar is read every few minutes, not every minute: 2 accounts, read at 10:00 and again at 10:10.
-  assert.equal(calls.length, 4);
+  assert.equal(calls.filter((call) => call.url.includes("calendar/v3")).length, 4);
 });
 
 test("initiative: silent in quiet hours, when switched off, and when the calendar cannot be read", async () => {
@@ -76,5 +76,58 @@ test("initiative: silent in quiet hours, when switched off, and when the calenda
   assert.deepEqual(await new Initiative(day.now).check(), []);
 
   assert.deepEqual([isQuiet(23, [22, 7]), isQuiet(3, [22, 7]), isQuiet(7, [22, 7]), isQuiet(12, [22, 7]), isQuiet(13, [12, 14]), isQuiet(5, [0, 0])], [true, true, false, false, true, false]);
+  settings({});
+});
+
+test("initiative: an important email is announced when it arrives, not when it was already waiting", async () => {
+  settings({});
+  connect({ "work@example.com": [SCOPE.mailRead] });
+  const time = clock();
+  let inbox = ["old"];
+  const mail: Record<string, { from: string; subject: string }> = {
+    old: { from: "Old <old@example.com>", subject: "ישן" },
+    m1: { from: '"דנה לוי" <dana@example.com>', subject: "חוזה לחתימה" },
+    m2: { from: "noreply@example.com", subject: "x".repeat(200) },
+    m3: { from: "A <a@example.com>", subject: "3" },
+    m4: { from: "B <b@example.com>", subject: "4" },
+  };
+  const calls = fakeNetwork({
+    "/messages?": () => ({ messages: inbox.map((id) => ({ id })) }),
+    "/messages/": (call) => {
+      const id = call.url.split("/messages/")[1]!.split("?")[0]!;
+      return { id, labelIds: ["UNREAD"], payload: { headers: [{ name: "From", value: mail[id]!.from }, { name: "Subject", value: mail[id]!.subject }] } };
+    },
+  });
+  const initiative = new Initiative(time.now);
+
+  // What was already in the inbox when the app opened is not news.
+  assert.deepEqual(await initiative.check(), []);
+  assert.match(decodeURIComponent(calls[0]!.url.replace(/\+/g, " ")), /is:unread is:important in:inbox/);
+
+  // A minute later nothing is read again; after three minutes the new email is found.
+  inbox = ["m1", "old"];
+  time.forward(1);
+  assert.deepEqual(await initiative.check(), []);
+  time.forward(2);
+  assert.deepEqual((await initiative.check()).map((nudge) => nudge.text), ["מייל חשוב מ-דנה לוי: חוזה לחתימה"]);
+
+  // Said once. A long subject is cut. A sender with no name is shown by address.
+  inbox = ["m2", "m1", "old"];
+  time.forward(3);
+  const [long] = await initiative.check();
+  assert.match(long!.text, /^מייל חשוב מ-noreply@example\.com: x{69}…$/);
+
+  // Three at once become one sentence.
+  inbox = ["m4", "m3", "new", "m2", "m1", "old"];
+  mail.new = { from: "C <c@example.com>", subject: "5" };
+  time.forward(3);
+  assert.deepEqual((await initiative.check()).map((nudge) => nudge.text), ["הגיעו 3 מיילים חשובים חדשים"]);
+
+  // Switched off in the settings: the inbox is not even read.
+  settings({ initiative: { mail: false } });
+  const before = calls.length;
+  time.forward(3);
+  assert.deepEqual(await new Initiative(time.now).check(), []);
+  assert.equal(calls.length, before);
   settings({});
 });

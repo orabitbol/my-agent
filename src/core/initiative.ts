@@ -1,7 +1,8 @@
 // Initiative: the agent turns to the user by itself when there is a reason.
-// The first reason: a meeting is about to start.
+// Two reasons so far: a meeting is about to start, and an important email arrived.
 //
-// This costs nothing to run: it reads the calendar and uses no model. It only
+// This costs nothing to run: it reads the calendar and the inbox and uses no
+// model. Which email is "important" is Gmail's own judgment, not ours. It only
 // decides WHAT is worth saying; the entry decides how to say it (a speech
 // bubble next to the character, a system notification).
 //
@@ -10,12 +11,17 @@
 
 import { loadSettings } from "./settings.js";
 import { getCalendarEvents } from "./tools/calendar.js";
+import { searchEmails } from "./tools/mail.js";
 
 export type Nudge = { id: string; text: string };
 
 type CalendarEvent = { account: string; title: string; start: string; allDay: boolean; location: string | null; myResponse: string | null };
 
-const DEFAULTS = { enabled: true, minutesBefore: 10, quietHours: [22, 7] as [number, number] };
+type Email = { account: string; id: string; from: string; subject: string };
+
+const DEFAULTS = { enabled: true, minutesBefore: 10, quietHours: [22, 7] as [number, number], mail: true };
+// Unread, in the main inbox, and marked important by Gmail itself.
+const IMPORTANT_MAIL = "is:unread is:important in:inbox category:primary newer_than:1d";
 const REFRESH_MS = 3 * 60_000; // how often the calendar is read again
 const LOOK_AHEAD_MS = 45 * 60_000;
 
@@ -31,12 +37,18 @@ export function isQuiet(hour: number, [from, to]: [number, number]): boolean {
 }
 
 // A room name is worth showing; a long link is not.
+// "Dana Levi <dana@example.com>" is said as "Dana Levi".
+const senderName = (from: string) => from.replace(/<[^>]*>/g, "").replace(/["']/g, "").trim() || from.replace(/[<>]/g, "").trim();
+const short = (value: string, length: number) => (value.length > length ? value.slice(0, length - 1).trimEnd() + "…" : value);
+
 const place = (location: string | null) => (location && location.length <= 40 && !/https?:\/\//.test(location) ? ` (${location})` : "");
 
 export class Initiative {
   private events: CalendarEvent[] = [];
   private readAt = 0;
   private said = new Set<string>();
+  private mailReadAt = 0;
+  private knownMail: Set<string> | null = null; // null until the inbox was read once
 
   constructor(private now: () => Date = () => new Date()) {}
 
@@ -46,6 +58,9 @@ export class Initiative {
     const now = this.now();
     if (!settings.enabled || isQuiet(now.getHours(), settings.quietHours)) return [];
 
+    const nudges: Nudge[] = [];
+    if (settings.mail) nudges.push(...(await this.newMail(now)));
+
     if (now.getTime() - this.readAt >= REFRESH_MS) {
       try {
         const result = (await getCalendarEvents.run({ start: now.toISOString(), end: new Date(now.getTime() + LOOK_AHEAD_MS).toISOString() })) as { events: CalendarEvent[] };
@@ -53,11 +68,10 @@ export class Initiative {
         this.readAt = now.getTime();
       } catch {
         // No account, no network, an expired sign-in: stay silent and try again next time.
-        return [];
+        return nudges;
       }
     }
 
-    const nudges: Nudge[] = [];
     for (const event of this.events) {
       const minutes = Math.ceil((new Date(event.start).getTime() - now.getTime()) / 60_000);
       if (event.allDay || event.myResponse === "declined" || !(minutes > 0 && minutes <= settings.minutesBefore)) continue;
@@ -68,6 +82,27 @@ export class Initiative {
       nudges.push({ id, text: `${minutes === 1 ? "בעוד דקה" : `בעוד ${minutes} דקות`}: ${event.title}${place(event.location)}` });
     }
     return nudges;
+  }
+
+  // Important emails that arrived since the last look. What was already waiting
+  // when the app opened is not announced: only what arrives from then on.
+  private async newMail(now: Date): Promise<Nudge[]> {
+    if (now.getTime() - this.mailReadAt < REFRESH_MS) return [];
+    let emails: Email[];
+    try {
+      emails = ((await searchEmails.run({ query: IMPORTANT_MAIL, limit: 10 })) as { emails: Email[] }).emails;
+      this.mailReadAt = now.getTime();
+    } catch {
+      return []; // no mail permission, no network: stay silent
+    }
+    const first = this.knownMail === null;
+    const known = (this.knownMail ??= new Set());
+    const fresh = emails.filter((email) => !known.has(`${email.account}|${email.id}`));
+    for (const email of fresh) known.add(`${email.account}|${email.id}`);
+    if (first || fresh.length === 0) return [];
+    // Several at once (after quiet hours, after a long meeting) are one sentence, not a flood.
+    if (fresh.length > 2) return [{ id: `mail|${fresh.map((email) => email.id).join(",")}`, text: `הגיעו ${fresh.length} מיילים חשובים חדשים` }];
+    return fresh.map((email) => ({ id: `mail|${email.id}`, text: `מייל חשוב מ-${short(senderName(email.from), 30)}: ${short(email.subject, 70)}` }));
   }
 }
 
