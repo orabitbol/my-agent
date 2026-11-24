@@ -33,10 +33,16 @@ cp "$AGENT/device/agent_settings.c" "$DEMO/main/agent_settings.c"
 cp "$AGENT/device/agent_face.c" "$DEMO/main/agent_face.c"
 # The part that tells the agent when the screen is touched.
 cp "$AGENT/device/agent_touch.c" "$DEMO/main/agent_touch.c"
+# The part that listens for two claps.
+cp "$AGENT/device/agent_claps.c" "$DEMO/main/agent_claps.c"
+# The part that sends the device's log to the app.
+cp "$AGENT/device/agent_log.c" "$DEMO/main/agent_log.c"
 
-DEMO="$DEMO" KEY="$KEY" URL="http://$IP:$PORT/device/voice" SETTINGS_URL="http://$IP:$PORT/device/settings" TOUCH_URL="http://$IP:$PORT/device/touch" python3 - <<'PY'
+DEMO="$DEMO" KEY="$KEY" URL="http://$IP:$PORT/device/voice" SETTINGS_URL="http://$IP:$PORT/device/settings" TOUCH_URL="http://$IP:$PORT/device/touch" WAKE_URL="http://$IP:$PORT/device/wake" python3 - <<'PY'
 import os, re
 demo, key, url, settings_url, touch_url = os.environ["DEMO"], os.environ["KEY"], os.environ["URL"], os.environ["SETTINGS_URL"], os.environ["TOUCH_URL"]
+wake_url = os.environ["WAKE_URL"]
+log_url = url.rsplit("/", 1)[0] + "/log"
 def edit(name, fn):
     path = os.path.join(demo, name)
     old = open(path).read()
@@ -52,7 +58,7 @@ def once(text, old, new, name):
 # settings.h: where the agent is, and the device's key.
 def settings(t):
     t = re.sub(r'\n/\* my-agent \*/\n(?:#define AGENT_\w+ .*\n)+', "", t)
-    block = f'\n/* my-agent */\n#define AGENT_VOICE_URL "{url}"\n#define AGENT_SETTINGS_URL "{settings_url}"\n#define AGENT_TOUCH_URL "{touch_url}"\n#define AGENT_DEVICE_KEY "{key}"\n'
+    block = f'\n/* my-agent */\n#define AGENT_VOICE_URL "{url}"\n#define AGENT_SETTINGS_URL "{settings_url}"\n#define AGENT_TOUCH_URL "{touch_url}"\n#define AGENT_WAKE_URL "{wake_url}"\n#define AGENT_LOG_URL "{log_url}"\n#define AGENT_DEVICE_KEY "{key}"\n'
     return once(t, "\n#ifdef __cplusplus\n}\n#endif", block + "\n#ifdef __cplusplus\n}\n#endif", "settings.h")
 edit("main/settings.h", settings)
 
@@ -87,6 +93,8 @@ edit("CMakeLists.txt", cmake)
 edit("main/CMakeLists.txt", lambda t: t if "agent_settings.c" in t else once(t, '"openai_signaling.c"', '"openai_signaling.c" "agent_settings.c"', "main/CMakeLists.txt"))
 edit("main/CMakeLists.txt", lambda t: t if "agent_face.c" in t else once(t, '"agent_settings.c"', '"agent_settings.c" "agent_face.c"', "main/CMakeLists.txt"))
 edit("main/CMakeLists.txt", lambda t: t if "agent_touch.c" in t else once(t, '"agent_face.c"', '"agent_face.c" "agent_touch.c"', "main/CMakeLists.txt"))
+edit("main/CMakeLists.txt", lambda t: t if "agent_claps.c" in t else once(t, '"agent_touch.c"', '"agent_touch.c" "agent_claps.c"', "main/CMakeLists.txt"))
+edit("main/CMakeLists.txt", lambda t: t if "agent_log.c" in t else once(t, '"agent_claps.c"', '"agent_claps.c" "agent_log.c"', "main/CMakeLists.txt"))
 def main_c(t):
     if "agent_settings_set_online(connected);" not in t:
         t = once(t, "static int network_event_handler(bool connected)\n{\n", "void agent_settings_start(void);\nvoid agent_settings_set_online(bool on);\n\nstatic int network_event_handler(bool connected)\n{\n    agent_settings_set_online(connected);\n", "main.c")
@@ -98,6 +106,12 @@ def main_c(t):
     if "agent_touch_start" not in t:
         t = once(t, "void agent_face_start(void);\n", "void agent_face_start(void);\nvoid agent_touch_start(void);\n", "main.c")
         t = once(t, "    agent_face_start();\n", "    agent_face_start();\n    agent_touch_start();\n", "main.c")
+    if "agent_claps_start" not in t:
+        t = once(t, "void agent_touch_start(void);\n", "void agent_touch_start(void);\nvoid agent_claps_start(void);\n", "main.c")
+        t = once(t, "    agent_touch_start();\n", "    agent_touch_start();\n    agent_claps_start();\n", "main.c")
+    if "agent_log_start" not in t:
+        t = once(t, "void agent_claps_start(void);\n", "void agent_claps_start(void);\nvoid agent_log_start(void);\n", "main.c")
+        t = once(t, "    init_board();\n", "    agent_log_start();\n    init_board();\n", "main.c")
     # The device no longer starts a call when it gets on the network: the agent says when.
     t = t.replace("        RUN_ASYNC(start, { start_webrtc(); });\n", "        (void)0; /* my-agent: a call starts when the agent says so (see agent_settings.c) */\n")
     return t

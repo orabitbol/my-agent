@@ -154,7 +154,7 @@ test("device: its settings reach it through the door, and the app's light follow
   assert.equal((await call({}, "/device/settings", "GET")).status, 401);
   // Out-of-range and unknown values are brought back inside the limits; unknown names are dropped.
   const saved = await app({ volume: 250, muted: true, voice: "nobody", language: "auto", key: "x" });
-  assert.deepEqual(saved.settings, { volume: 100, muted: true, voice: "", language: "auto" });
+  assert.deepEqual(saved.settings, { volume: 100, muted: true, voice: "", language: "auto", claps: true });
 
   const asked = await call(undefined, "/device/settings", "GET");
   assert.equal(asked.status, 200);
@@ -243,4 +243,60 @@ test("device: told to move in words, the character goes a moment later; without 
   assert.deepEqual(places, []);
   await new Promise((r) => setTimeout(r, 2100));
   assert.deepEqual(places, ["device"]);
+});
+
+test("device: two claps wake it, with a hello first; switched off in the settings they do nothing", async () => {
+  connect({ "work@example.com": [] });
+  openai();
+  const port = nextPort++;
+  const socket = fakeSocket();
+  const places: string[] = [];
+  const base = await startServer(0, { agent: new Agent({ client: fakeModel([[say("x")]]).client, tools: [] }), tools: [plain], device: { port, key: KEY, connect: socket.connect }, onCharacterPlace: (where) => void places.push(where) });
+  await new Promise((r) => setTimeout(r, 50));
+  const auth = { Authorization: `Bearer ${KEY}` };
+  const device = (path: string, method = "POST", body?: string) => fetch(`http://127.0.0.1:${port}${path}`, { method, headers: auth, body });
+  const set = (change: object) => fetch(`${base}/api/device`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
+
+  // Switched off: the device is told not to listen, and a stray report changes nothing.
+  await set({ claps: false });
+  assert.equal(((await (await device("/device/settings", "GET")).json()) as { claps: boolean }).claps, false);
+  assert.equal((await device("/device/wake")).status, 204);
+  assert.deepEqual(places, []);
+
+  // Switched on: two claps call it over, and the call opens with a greeting.
+  await set({ claps: true });
+  assert.equal((await fetch(`http://127.0.0.1:${port}/device/wake`, { method: "POST" })).status, 401);
+  await device("/device/wake");
+  assert.deepEqual(places, ["device"]);
+  assert.equal((await device("/device/voice", "POST", OFFER)).status, 200);
+  await until(() => socket.sent.some((event) => event.type === "response.create"));
+  const hello = socket.sent.find((event) => event.type === "response.create") as { response: { instructions: string } };
+  assert.match(hello.response.instructions, /בוקר טוב|צהריים טובים|ערב טוב|לילה טוב/);
+
+  // Claps while it is already here do not send it away (only a touch does).
+  await device("/device/wake");
+  assert.deepEqual(places, ["device"]);
+});
+
+test("device: the technical log shows what happened, including the device's own lines, and never what was said", async () => {
+  connect({ "work@example.com": [] });
+  openai();
+  const port = nextPort++;
+  const base = await startServer(0, { agent: new Agent({ client: fakeModel([[say("x")]]).client, tools: [] }), tools: [plain], device: { port, key: KEY, connect: fakeSocket().connect } });
+  await new Promise((r) => setTimeout(r, 50));
+  const auth = { Authorization: `Bearer ${KEY}` };
+
+  assert.equal((await fetch(`http://127.0.0.1:${port}/device/log`, { method: "POST", body: "x" })).status, 401);
+  const sent = await fetch(`http://127.0.0.1:${port}/device/log`, { method: "POST", headers: auth, body: "\u001b[0;32mI (2100) AGENT_CLAPS: First clap (loudness 30000, room 400)\u001b[0m\nE (2200) DEV_LCD_TOUCH: no touch\n" });
+  assert.equal(sent.status, 204);
+  await fetch(`http://127.0.0.1:${port}/device/touch`, { method: "POST", headers: auth });
+
+  const { lines } = (await (await fetch(`${base}/api/trace`)).json()) as { lines: { source: string; text: string }[] };
+  const text = lines.map((line) => `[${line.source}] ${line.text}`).join("\n");
+  assert.match(text, /\[device\] I \(2100\) AGENT_CLAPS: First clap/);
+  assert.match(text, /\[device\] E \(2200\) DEV_LCD_TOUCH: no touch/);
+  assert.match(text, /\[device\] the screen was touched/);
+  assert.match(text, /\[app\] the character is wanted on the device/);
+  assert.doesNotMatch(text, /\u001b/, "color codes are stripped");
+  assert.doesNotMatch(text, new RegExp(KEY), "the device's key never appears");
 });

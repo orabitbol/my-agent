@@ -4,6 +4,7 @@
 // This is the single gate every action of the agent passes through. The model,
 // whichever one it is, can only ask; what actually happens is decided here.
 
+import { trace } from "./trace.js";
 import { logToolCall } from "./log.js";
 import type { Tool } from "./tools/types.js";
 
@@ -50,6 +51,9 @@ export async function runTool(tools: Tool[], name: string, rawArgs: string, hand
   }
 
   const event = { tool: name, args, ok, result, ms: Date.now() - started };
+  // The technical log gets the fact and any error, never the content.
+  const failure = !ok && result && typeof result === "object" && "error" in result ? `: ${String((result as { error: unknown }).error)}` : "";
+  trace("tool", `${name} ${ok ? "ok" : failure ? "failed" : "not run"} (${event.ms} ms)${failure}`);
   await logToolCall(event);
   handlers.onToolCall?.(event);
   return result;

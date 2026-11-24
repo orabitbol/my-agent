@@ -22,6 +22,7 @@ import { attachToCall } from "../core/voice-sideband.js";
 import type { SidebandOptions } from "../core/voice-sideband.js";
 import { timingSafeEqual, createHash } from "node:crypto";
 import { setMover } from "../core/place.js";
+import { trace, traceLines } from "../core/trace.js";
 import type { ServerResponse } from "node:http";
 
 // Listen on this computer only. Nothing on the network can reach the agent.
@@ -181,6 +182,7 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
   function moveCharacter(where: "computer" | "device", deviceReachable = true): void {
     if (where === place) return;
     place = where;
+    trace("app", `the character moves to the ${where}`);
     clearTimeout(arriving);
     character.signal("place", where); // the chat page ends its own voice conversation when it leaves
     if (where === "device") {
@@ -210,10 +212,17 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
     const CALL_MUST_START_MS = 20_000;
     let wantedSince = 0;
     let pending: NodeJS.Timeout | undefined;
-    const want = (on: boolean) => {
+    let greetNext = false; // woken by claps: it says hello first
+    const greeting = () => {
+      const hour = new Date().getHours();
+      return hour >= 5 && hour < 12 ? "בוקר טוב" : hour < 17 ? "צהריים טובים" : hour < 22 ? "ערב טוב" : "לילה טוב";
+    };
+    const want = (on: boolean, greet = false) => {
       clearTimeout(pending);
       if (on === wanted) return;
       wanted = on;
+      greetNext = on && greet;
+      trace("app", on ? `the character is wanted on the device${greet ? " (with a greeting)" : ""}` : "the character is sent back to the computer");
       wantedSince = Date.now();
       if (on) character.set("thinking"); // on its way, the call is still connecting
       else {
@@ -224,8 +233,12 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
       tellDevice();
       settle();
     };
+    let wasConnected = false;
     const settle = () => {
       const { connected } = deviceStatus!();
+      if (connected !== wasConnected) trace("app", connected ? "the device is connected" : "the device stopped answering");
+      wasConnected = connected;
+      if (wanted && current === null && Date.now() - wantedSince > CALL_MUST_START_MS) trace("app", "the device did not start a call in time");
       // A device that went away, or a call that never started: it comes home.
       if (wanted && (!connected || (current === null && Date.now() - wantedSince > CALL_MUST_START_MS))) return void want(false);
       moveCharacter(wanted && connected ? "device" : "computer", connected);
@@ -244,15 +257,38 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         const asked = new URL(request.url ?? "/", "http://device");
         const asksSettings = request.method === "GET" && asked.pathname === "/device/settings";
         const touched = request.method === "POST" && asked.pathname === "/device/touch";
-        if (!asksSettings && !touched && (request.method !== "POST" || request.url !== "/device/voice")) return void response.writeHead(404).end();
+        const woken = request.method === "POST" && asked.pathname === "/device/wake";
+        const notes = request.method === "POST" && asked.pathname === "/device/log";
+        if (!asksSettings && !touched && !woken && !notes && (request.method !== "POST" || request.url !== "/device/voice")) return void response.writeHead(404).end();
         const given = (request.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
         if (!given || !sameKey(given)) return void response.writeHead(401).end();
         lastSeen = Date.now();
 
+        // The device's own log lines, so they can be read here instead of in a terminal.
+        if (notes) {
+          let text = "";
+          for await (const chunk of request) {
+            text += chunk;
+            if (text.length > 8000) break;
+          }
+          for (const line of text.split("\n")) if (line.trim()) trace("device", line.replace(/\x1b\[[0-9;]*m/g, ""));
+          return void response.writeHead(204).end();
+        }
+
         // A touch on the device's screen: call the character over, or send it back.
         if (touched) {
+          trace("device", "the screen was touched");
           request.resume();
           want(!wanted);
+          return void response.writeHead(204).end();
+        }
+
+        // Two claps near the device: it comes over and says hello. Never sends it back.
+        if (woken) {
+          request.resume();
+          const listens = (await deviceSettings()).claps;
+          trace("device", `two claps${listens ? "" : " (ignored: switched off in the settings)"}`);
+          if (listens) want(true, true);
           return void response.writeHead(204).end();
         }
 
@@ -270,8 +306,8 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
             if (response.destroyed) return;
             lastSeen = Date.now();
           }
-          const { volume, muted } = await deviceSettings();
-          const body = JSON.stringify({ v: deviceVersion, volume, muted, here: onDevice, call: wanted, face: character.state });
+          const { volume, muted, claps } = await deviceSettings();
+          const body = JSON.stringify({ v: deviceVersion, volume, muted, claps, here: onDevice, call: wanted, face: character.state });
           response.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
           return void response.end(body);
         }
@@ -281,6 +317,7 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
           offer += chunk;
           if (offer.length > 64_000) return void response.writeHead(413).end();
         }
+        trace("device", "asks to start a voice call");
         if (!wanted) want(true); // a call the device started by itself also brings the character over
         const chosen = await deviceSettings();
         const { answerSdp, callId } = await startVoiceSession(offer, voiceTools, "device", { voice: chosen.voice, hebrewOnly: chosen.language === "he" });
@@ -290,11 +327,15 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         if (callId) {
           const call = attachToCall(callId, voiceTools, {
             connect: device.connect,
+            opening: greetNext ? greeting() : undefined,
             approve: askAnywhere,
-            onState: (state) => character.set(state),
+            onState: (state) => { trace("call", state); character.set(state); },
           });
           current = call;
+          greetNext = false;
+          trace("call", `started (${callId})`);
           void call.closed.then(() => {
+            trace("call", `ended (${callId})`);
             if (current !== call) return;
             current = null;
             want(false); // the call ended (a long silence, or the device hung up): it goes home
@@ -305,12 +346,13 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         response.end(answerSdp);
       } catch (error) {
         console.error("device:", error instanceof Error ? error.message : error);
+        trace("app", `the device's request failed: ${error instanceof Error ? error.message : String(error)}`);
         if (!response.headersSent) response.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
         response.end(error instanceof Error ? error.message : String(error));
       }
     });
     door.on("error", (error) => console.error("The device's door could not open:", error.message));
-    door.listen(device.port, "0.0.0.0");
+    door.listen(device.port, "0.0.0.0", () => trace("app", `waiting for the device on port ${device.port}`));
   }
   if (options.device) {
     if (options.device.key.length >= 32) startDeviceDoor(options.device);
@@ -368,12 +410,18 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
         return;
       }
 
+      // The technical log, for the "לוגים" tab.
+      if (request.method === "GET" && request.url === "/api/trace") {
+        sendJson(200, { lines: traceLines() });
+        return;
+      }
+
       // The desk device: its light (is it switched on and reaching us) and its settings.
       if (request.url === "/api/device" && (request.method === "GET" || request.method === "POST")) {
         if (request.method === "POST") {
           const asked = await readJson(request);
           const settings = await loadSettings();
-          const allowed = Object.fromEntries(Object.entries(asked).filter(([name]) => ["volume", "muted", "voice", "language"].includes(name)));
+          const allowed = Object.fromEntries(Object.entries(asked).filter(([name]) => ["volume", "muted", "voice", "language", "claps"].includes(name)));
           settings.device = fillDeviceSettings({ ...settings.device, ...allowed });
           await saveSettings(settings);
           tellDevice();

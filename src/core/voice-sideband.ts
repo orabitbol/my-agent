@@ -35,6 +35,8 @@ const connectForReal: Connect = (url, headers) =>
 export type SidebandOptions = TurnHandlers & {
   onState?: (state: CharacterState) => void;
   connect?: Connect;
+  // Said by the agent as soon as the call is up, before the user says anything ("בוקר טוב").
+  opening?: string;
   idleMs?: number;
   maxMs?: number;
 };
@@ -129,7 +131,11 @@ export function attachToCall(callId: string, tools: Tool[], options: SidebandOpt
     show("resting");
     finish();
   };
-  socket.addEventListener("open", () => show("listening"));
+  socket.addEventListener("open", () => {
+    show("listening");
+    // The sound itself needs a moment to connect; a greeting sent at once would lose its first word.
+    if (options.opening) setTimeout(() => say({ type: "response.create", response: { instructions: `Say out loud exactly this and nothing else: "${options.opening}". Then stop and listen.` } }), 1200).unref?.();
+  });
   socket.addEventListener("close", end);
   socket.addEventListener("error", end);
 

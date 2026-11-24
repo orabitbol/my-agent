@@ -256,6 +256,23 @@
   .group-title span { font-weight: var(--weight-regular); color: var(--label-tertiary); }
   .card { background: var(--surface-card); border-radius: var(--radius-medium); overflow: hidden; }
 
+  /* The activity section has two views: what the agent did, in words, and the technical log. */
+  .tabs-title { align-items: center; }
+  .tabs { display: flex; gap: var(--space-half); padding: var(--space-half); border-radius: var(--radius-small); background: var(--fill); }
+  .tab {
+    font: inherit; font-weight: var(--weight-medium); color: var(--label-secondary); cursor: default;
+    background: transparent; border: 0; border-radius: var(--radius-small); padding: var(--space-half) var(--space-2);
+    -webkit-app-region: no-drag;
+  }
+  .tab[aria-selected="true"] { background: var(--surface-control); color: var(--label); box-shadow: var(--shadow-control); }
+  .trace-copy { font-size: var(--text-subheadline); color: var(--accent); }
+  .trace-copy[hidden], #trace[hidden], #calls[hidden] { display: none; }
+  #trace pre {
+    margin: 0; padding: var(--space-3); max-height: var(--sidebar-width); overflow: auto;
+    font-family: var(--font-mono); font-size: var(--text-footnote); line-height: var(--lh-body); color: var(--label-secondary);
+    white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; user-select: text; cursor: text;
+  }
+
   .row {
     position: relative; display: flex; align-items: center; gap: var(--space-3);
     padding: var(--space-2) var(--space-3); min-height: var(--row-height);
@@ -382,7 +399,11 @@
     <label class="setting"><span class="setting-name">קול</span>
       <select id="set-voice"></select></label>
   </div>
-  <p class="sheet-note">עוצמה והשתקה משתנות במכשיר תוך כמה שניות. שפה וקול נכנסים לתוקף בשיחה הבאה.</p>
+  <div class="card">
+    <label class="setting"><span class="setting-name">שתי מחיאות כפיים מעירות אותו</span>
+      <input type="checkbox" class="switch" id="set-claps"></label>
+  </div>
+  <p class="sheet-note">נגיעה במסך המכשיר תמיד קוראת לו ומחזירה אותו. עוצמה, השתקה ומחיאות כפיים משתנות במכשיר תוך כמה שניות. שפה וקול נכנסים לתוקף בשיחה הבאה.</p>
 </dialog>
 
 <aside aria-label="חשבונות, זיכרון ופעילות">
@@ -409,8 +430,15 @@
     <h2 class="group-title">זיכרון <span id="memory-count"></span></h2>
     <div class="card" id="memory"></div>
 
-    <h2 class="group-title">פעילות</h2>
-    <div class="card" id="calls"></div>
+    <div class="group-title tabs-title">
+      <div class="tabs" role="tablist">
+        <button class="tab" id="tab-activity" type="button" role="tab" aria-selected="true" aria-controls="calls">פעילות</button>
+        <button class="tab" id="tab-trace" type="button" role="tab" aria-selected="false" aria-controls="trace">לוגים</button>
+      </div>
+      <button class="button trace-copy" id="trace-copy" type="button" hidden>העתק הכול</button>
+    </div>
+    <div class="card" id="calls" role="tabpanel"></div>
+    <div class="card" id="trace" role="tabpanel" hidden><pre id="trace-text" dir="ltr"></pre></div>
   </div>
 </aside>
 
@@ -691,6 +719,52 @@
   }
   loadMemory();
 
+  // ---- the technical log: what happens between the app, the device and the call ----
+  // The default view stays the activity in words. This one is for finding out
+  // why something did not work, and for copying to whoever helps fix it.
+  const tabActivity = document.getElementById("tab-activity");
+  const tabTrace = document.getElementById("tab-trace");
+  const traceText = document.getElementById("trace-text");
+  const traceCopy = document.getElementById("trace-copy");
+  let traceTimer = null;
+  const clock = (at) => new Date(at).toLocaleTimeString("en-GB", { hour12: false });
+  async function loadTrace() {
+    try {
+      const { lines } = await (await fetch("/api/trace")).json();
+      const text = lines.map((line) => `${clock(line.at)} [${line.source}] ${line.text}`).join("\n") || "Nothing has happened yet.";
+      if (text === traceText.textContent) return;
+      const atEnd = traceText.scrollTop + traceText.clientHeight >= traceText.scrollHeight - 8;
+      traceText.textContent = text;
+      if (atEnd) traceText.scrollTop = traceText.scrollHeight;
+    } catch {
+      // the log is not essential: leave it as it is
+    }
+  }
+  function showTab(trace) {
+    tabActivity.setAttribute("aria-selected", String(!trace));
+    tabTrace.setAttribute("aria-selected", String(trace));
+    document.getElementById("calls").hidden = trace;
+    document.getElementById("trace").hidden = !trace;
+    traceCopy.hidden = !trace;
+    clearInterval(traceTimer);
+    if (trace) {
+      loadTrace().then(() => { traceText.scrollTop = traceText.scrollHeight; });
+      traceTimer = setInterval(loadTrace, 1500);
+    }
+  }
+  tabActivity.addEventListener("click", () => showTab(false));
+  tabTrace.addEventListener("click", () => showTab(true));
+  traceCopy.addEventListener("click", async () => {
+    await loadTrace();
+    try {
+      await navigator.clipboard.writeText(traceText.textContent);
+      traceCopy.textContent = "הועתק";
+    } catch {
+      traceCopy.textContent = "סמן והעתק ידנית";
+    }
+    setTimeout(() => { traceCopy.textContent = "העתק הכול"; }, 1600);
+  });
+
   // ---- the desk device: a light that says whether it reaches us, and its settings ----
   const deviceLight = document.getElementById("device-light");
   const settingsSheet = document.getElementById("settings");
@@ -698,6 +772,7 @@
   const setMuted = document.getElementById("set-muted");
   const setLanguage = document.getElementById("set-language");
   const setVoice = document.getElementById("set-voice");
+  const setClaps = document.getElementById("set-claps");
   const VOICE_NAMES = { "": "כמו במחשב", marin: "Marin", cedar: "Cedar", coral: "Coral", sage: "Sage", ash: "Ash" };
   function showDevice(device) {
     const state = !device.enabled ? "off" : device.inCall ? "call" : device.connected ? "on" : "off";
@@ -712,6 +787,7 @@
     setVolume.value = device.settings.volume;
     document.getElementById("set-volume-value").textContent = device.settings.volume;
     setMuted.checked = device.settings.muted;
+    setClaps.checked = device.settings.claps;
     setLanguage.value = device.settings.language;
     setVoice.value = device.settings.voice;
   }
@@ -733,6 +809,7 @@
   setVolume.addEventListener("input", () => { document.getElementById("set-volume-value").textContent = setVolume.value; });
   setVolume.addEventListener("change", () => saveDevice({ volume: Number(setVolume.value) }));
   setMuted.addEventListener("change", () => saveDevice({ muted: setMuted.checked }));
+  setClaps.addEventListener("change", () => saveDevice({ claps: setClaps.checked }));
   setLanguage.addEventListener("change", () => saveDevice({ language: setLanguage.value }));
   setVoice.addEventListener("change", () => saveDevice({ voice: setVoice.value }));
   document.getElementById("settings-open").addEventListener("click", () => { settingsSheet.showModal(); loadDevice(); });

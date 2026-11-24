@@ -28,6 +28,8 @@
 
 int start_webrtc(void);
 int stop_webrtc(void);
+void agent_claps_set(bool on);
+void agent_claps_hold(bool hold);
 
 /* Starting and stopping a call takes a moment, so it runs beside this task, as the demo itself does. */
 static void call_job(void *arg)
@@ -43,6 +45,7 @@ static void call_job(void *arg)
 static void set_call(bool on)
 {
     ESP_LOGI(TAG, "The agent says: %s", on ? "start a call" : "end the call");
+    agent_claps_hold(on); /* during a call the microphone belongs to the call */
     media_lib_thread_create_from_scheduler(NULL, on ? "start" : "stop", call_job, on ? (void *)1 : NULL);
 }
 
@@ -64,7 +67,7 @@ static esp_codec_dev_handle_t codec(const char *name)
     return handles->codec_dev;
 }
 
-/* Reads the agent's answer, for example {"v":7,"volume":90,"muted":false,"here":true,"call":true,"face":"speaking"}.
+/* Reads the agent's answer, for example {"v":7,"volume":90,"muted":false,"here":true,"call":true,"claps":true,"face":"speaking"}.
  * `seen` is the version of the last answer: the agent waits until it has a newer one. */
 static bool ask_agent(char *body, int size, int seen)
 {
@@ -125,6 +128,8 @@ static void settings_task(void *arg)
             }
         }
         agent_face_set(strstr(body, "\"here\":true") != NULL, face);
+
+        agent_claps_set(strstr(body, "\"claps\":true") != NULL);
 
         bool want_call = strstr(body, "\"call\":true") != NULL;
         if (want_call != calling) {
