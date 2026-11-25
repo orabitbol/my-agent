@@ -52,6 +52,17 @@ export function attachToCall(callId: string, tools: Tool[], options: SidebandOpt
   let working = 0; // tools running right now
   let over = false;
   const jobs = new Map<string, Promise<void>[]>();
+  // The model can only say one thing at a time. A tool that took a while (it waited
+  // for an approval) may finish while the model is in the middle of another answer,
+  // because the user kept talking. Asking it to continue right then is refused and the
+  // result would never be spoken. So: if it is busy, remember that we owe it a turn.
+  let answering = 0;
+  let owed = false;
+  const continueWhenFree = () => {
+    if (answering > 0) return void (owed = true);
+    owed = false;
+    say({ type: "response.create" });
+  };
   const say = (event: object) => {
     if (!over) socket.send(JSON.stringify(event));
   };
@@ -91,8 +102,12 @@ export function attachToCall(callId: string, tools: Tool[], options: SidebandOpt
         lastActive = Date.now();
         show("hearing");
         break;
-      case "input_audio_buffer.speech_stopped":
       case "response.created":
+        answering++;
+        lastActive = Date.now();
+        show("thinking");
+        break;
+      case "input_audio_buffer.speech_stopped":
         lastActive = Date.now();
         show("thinking");
         break;
@@ -111,12 +126,14 @@ export function attachToCall(callId: string, tools: Tool[], options: SidebandOpt
         break;
       case "response.done": {
         // If the model asked for tools, give it all the results, then let it continue.
+        answering = Math.max(0, answering - 1);
         const id = event.response?.id ?? "";
         const waiting = jobs.get(id);
         if (waiting) {
           jobs.delete(id);
-          void Promise.all(waiting).then(() => say({ type: "response.create" }));
-        } else if (working === 0) show("listening");
+          void Promise.all(waiting).then(continueWhenFree);
+        } else if (owed && answering === 0) continueWhenFree();
+        else if (working === 0) show("listening");
         break;
       }
     }

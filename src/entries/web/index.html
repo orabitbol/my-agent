@@ -675,14 +675,24 @@
     text.append(render(request.summary));
 
     const actions = element("div", "approval-actions");
+    const status = element("div", "approval-status");
     const answer = async (approved) => {
-      const status = element("div", "approval-status", approved ? "אושר, מבצע…" : "בוטל");
+      status.textContent = approved ? "אושר, מבצע…" : "בוטל";
       actions.replaceWith(status);
+      if (characterState === "approval") showCharacter("thinking");
+      // The line at the bottom must stop saying it waits for him: he has answered.
+      if (voice && voiceBar.dataset.state === "approval") setVoiceState("thinking");
+      // The answer only counts if the question is still open. If it expired meanwhile, say so instead of pretending.
+      let stillOpen = false;
+      try {
+        stillOpen = (await fetch("/api/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: request.id, approved }) })).ok;
+      } catch {}
+      openCards.delete(request.id);
+      if (!stillOpen) return expire(status);
       // The moment the action itself finishes, the card says so. The agent's words come after.
       if (approved) waitingCards.push({ tool: request.tool, status });
-      if (characterState === "approval") showCharacter("thinking");
-      await post("/api/approve", { id: request.id, approved }).catch(() => {});
     };
+    openCards.set(request.id, () => { actions.replaceWith(status); expire(status); });
     const yes = element("button", "button primary", "אשר");
     yes.type = "button";
     yes.addEventListener("click", () => answer(true));
@@ -958,6 +968,12 @@
   // What the page does when the agent used a tool, in text or in voice.
   // Approved actions that have not reported back yet, oldest first.
   const waitingCards = [];
+  // Approval cards nobody has answered yet, by id, so one that expires can say so.
+  const openCards = new Map();
+  function expire(status) {
+    status.textContent = "לא נענה בזמן, לא בוצע";
+    status.classList.add("failed");
+  }
   function onToolEvent(eventData) {
     addToolCall(eventData);
     const at = waitingCards.findIndex((card) => card.tool === eventData.tool);
@@ -990,8 +1006,8 @@
 
   const VOICE_STATES = {
     connecting: "מתחבר…",
-    muted: "החזק את מקש הרווח, או לחץ והחזק את הדמות, ודבר.",
-    listening: "מקשיב. אפשר לדבר.",
+    muted: "המיקרופון סגור. לחץ 1 כדי שיקשיב, או החזק את מקש הרווח ודבר.",
+    listening: "מקשיב. אפשר לדבר. לחץ 0 כדי לסגור את המיקרופון.",
     hearing: "שומע אותך…",
     thinking: "חושב…",
     speaking: "מדבר. אפשר לקטוע אותי.",
@@ -1084,6 +1100,40 @@
     // What happens next (thinking, speaking) arrives from the conversation itself.
     setVoiceState(down ? "hearing" : "listening");
   }
+  // Two keys for the microphone: 1 and he listens, 0 and it is closed again.
+  //   1: starts a spoken conversation if there is none, with the microphone open.
+  //   0: closes the microphone. The conversation stays, so he can still finish answering.
+  async function setListening(on) {
+    if (on) {
+      voiceMode = "open";
+      try { localStorage.setItem("voice-mode", "open"); } catch {}
+      if (voice) applyMicrophone(); else await startVoice();
+    } else if (voice) {
+      voiceMode = "push";
+      holdingToTalk = false;
+      try { localStorage.setItem("voice-mode", "push"); } catch {}
+      applyMicrophone();
+    }
+  }
+  // A digit alone is the shortcut; a digit followed at once by more typing ("10 דקות") is a message.
+  // So the key waits a moment: if nothing else is typed, it acts. Otherwise the digit goes into the message.
+  let heldDigit = null;
+  window.addEventListener("keydown", (event) => {
+    if (heldDigit) {
+      clearTimeout(heldDigit.timer);
+      if (document.activeElement === input) input.value += heldDigit.key;
+      heldDigit = null;
+      input.dispatchEvent(new Event("input"));
+      return; // this key is typed as usual, after the digit
+    }
+    if ((event.key !== "1" && event.key !== "0") || event.metaKey || event.ctrlKey || event.altKey || event.repeat || event.isComposing) return;
+    // While he is writing a message, or changing a setting, the digits are just digits.
+    const typing = document.activeElement === input ? input.value !== "" : ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName ?? "");
+    if (typing) return;
+    event.preventDefault();
+    const key = event.key;
+    heldDigit = { key, timer: setTimeout(() => { heldDigit = null; void setListening(key === "1"); }, 350) };
+  });
   window.addEventListener("keydown", (event) => holdToTalk(event, true));
   window.addEventListener("keyup", (event) => holdToTalk(event, false));
   window.addEventListener("blur", () => { if (holdingToTalk) { holdingToTalk = false; applyMicrophone(); } });
@@ -1179,11 +1229,21 @@
   const characterEvents = new EventSource("/api/character");
   characterEvents.addEventListener("poke", () => { if (voice) stopVoice(); else startVoice(); });
   characterEvents.addEventListener("hold", (event) => setHolding(event.data === "down"));
+  // The same two keys from any other app (Control+Shift+1, Control+Shift+0).
+  characterEvents.addEventListener("listen", (event) => void setListening(event.data === "on"));
   // It left for the desk device: the conversation continues there, so it ends here.
   characterEvents.addEventListener("place", (event) => { if (event.data === "device" && voice) stopVoice(); });
   // The agent turned to the user by itself (a meeting is about to start): keep it in the chat too.
   characterEvents.addEventListener("nudge", (event) => addNote(event.data));
   // An action asked for through the desk device waits for approval here, on the computer.
+  // An action done through the desk device: show it in the activity list and on its card, like any other.
+  characterEvents.addEventListener("tool", (event) => {
+    const done = JSON.parse(event.data);
+    onToolEvent(done);
+    const link = done.ok && done.result && done.result.link;
+    if (link) addMessage("agent", "[פתח ביומן](" + link + ")");
+  });
+  characterEvents.addEventListener("expired", (event) => { openCards.get(event.data)?.(); openCards.delete(event.data); });
   characterEvents.addEventListener("approval", (event) => {
     document.getElementById("welcome")?.remove();
     addApproval(JSON.parse(event.data), null);

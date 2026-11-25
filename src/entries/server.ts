@@ -141,7 +141,12 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
   const askAnywhere: Approver = ({ tool, summary }) =>
     new Promise<boolean>((resolve) => {
       const id = randomUUID();
-      const timer = setTimeout(() => waitingApprovals.get(id)?.(false), 3 * 60_000);
+      const timer = setTimeout(() => {
+        // Nobody answered: it counts as "no", and the card on the screen must say so too.
+        trace("app", `the approval for ${tool} waited three minutes and expired`);
+        character.signal("expired", id);
+        waitingApprovals.get(id)?.(false);
+      }, 3 * 60_000);
       waitingApprovals.set(id, (approved) => {
         clearTimeout(timer);
         waitingApprovals.delete(id);
@@ -361,6 +366,8 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
             connect: device.connect,
             opening: greetNext ? greeting() : undefined,
             approve: askAnywhere,
+            // What was done through the device shows on the computer like anything else: in the activity list, and on its approval card.
+            onToolCall: (call) => character.signal("tool", JSON.stringify(call)),
             onState: (state) => { trace("call", state); character.set(state); },
           });
           current = call;
@@ -483,6 +490,14 @@ export function startServer(port: number, options: ServerOptions = {}): Promise<
       // A click on the character, or holding it down. The chat page acts on it.
       if (request.method === "POST" && request.url === "/api/character/poke") {
         character.signal("poke");
+        response.writeHead(204).end();
+        return;
+      }
+      // The keyboard shortcut from anywhere on the computer: listen, or stop listening.
+      if (request.method === "POST" && request.url === "/api/character/listen") {
+        const { on } = await readJson(request);
+        trace("app", on === true ? "shortcut: listen" : "shortcut: stop listening");
+        character.signal("listen", on === true ? "on" : "off");
         response.writeHead(204).end();
         return;
       }

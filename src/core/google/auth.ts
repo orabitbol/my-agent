@@ -85,6 +85,7 @@ async function saveTokens(tokens: Tokens): Promise<void> {
 // Calls Google's token endpoint. Used both for the first exchange and for refreshing.
 async function requestTokens(client: Client, params: Record<string, string>) {
   const response = await fetch(client.token_uri, {
+    signal: AbortSignal.timeout(20_000), // never wait forever for Google
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ client_id: client.client_id, client_secret: client.client_secret, ...params }),

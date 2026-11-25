@@ -349,3 +349,36 @@ test("device: its own mute button shows in the app, and only while the device is
   const { lines } = (await (await fetch(`${base}/api/trace`)).json()) as { lines: { text: string }[] };
   assert.ok(lines.some((line) => line.text === "muted with the button on the device"));
 });
+
+test("call: a result that arrives while the model is answering something else is still spoken, once it is free", async () => {
+  const { attachToCall } = await import("../src/core/voice-sideband.js");
+  const socket = fakeSocket();
+  let allow!: (yes: boolean) => void;
+  const done: string[] = [];
+  attachToCall("rtc_x", [sensitive], {
+    connect: socket.connect,
+    approve: () => new Promise<boolean>((resolve) => (allow = resolve)),
+    onToolCall: (call) => void done.push(`${call.tool}:${call.ok}`),
+  });
+  await until(() => socket.opened.length === 1);
+  const creates = () => socket.sent.filter((event) => event.type === "response.create").length;
+
+  // The model asks for an action that needs his yes.
+  socket.receive({ type: "response.created", response: { id: "r1" } });
+  socket.receive({ type: "response.output_item.done", response_id: "r1", item: { type: "function_call", name: "do_sensitive", arguments: "{}", call_id: "c1" } });
+  socket.receive({ type: "response.done", response: { id: "r1" } });
+  await until(() => typeof allow === "function");
+
+  // While the question waits, he keeps talking and the model starts answering him.
+  socket.receive({ type: "response.created", response: { id: "r2" } });
+  allow(true);
+  await until(() => done.length === 1);
+  await until(() => socket.sent.some((event) => event.type === "conversation.item.create"));
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(creates(), 0, "not asked to continue while it is in the middle of another answer");
+
+  // The other answer ends: now it is told to go on, and the result gets spoken.
+  socket.receive({ type: "response.done", response: { id: "r2" } });
+  await until(() => creates() === 1);
+  assert.deepEqual(done, ["do_sensitive:true"]);
+});

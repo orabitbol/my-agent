@@ -2,7 +2,7 @@
 // It starts the local server inside the app and shows the chat page in a window.
 
 import "./load-env.js"; // must stay first
-import { app, BrowserWindow, Notification, session, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, globalShortcut, Notification, session, shell, systemPreferences } from "electron";
 import { startInitiative } from "../core/initiative.js";
 import { openCharacter } from "./character-window.js";
 import { captureScreens } from "./screens.js";
@@ -89,6 +89,15 @@ void app.whenReady().then(async () => {
   });
   openWindow();
   const character = await openCharacter({ serverUrl, keepInside, chatReady });
+
+  // From any app: Control+Shift+1 and he listens, Control+Shift+0 and the microphone is closed.
+  // (Inside the app's own window the plain keys 1 and 0 do the same.)
+  // Not Shift alone: Shift+1 is "!" and Shift+0 is ")", and a shortcut that works in
+  // every app would swallow them, so they could no longer be typed anywhere.
+  const listen = (on: boolean) => void fetch(serverUrl + "/api/character/listen", { method: "POST", body: JSON.stringify({ on }) }).catch(() => {});
+  globalShortcut.register("Control+Shift+1", () => listen(true));
+  globalShortcut.register("Control+Shift+0", () => listen(false));
+  app.on("will-quit", () => globalShortcut.unregisterAll());
   floating = character;
   if (characterAway) character.setAway(true);
 

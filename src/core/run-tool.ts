@@ -46,6 +46,8 @@ export async function runTool(tools: Tool[], name: string, rawArgs: string, hand
     prepared = Date.now();
     const approved = !tool.needsApproval || (await isApproved(tool, toolArgs, handlers.approve));
     decided = Date.now();
+    // Said in the log the moment the action starts, so "running" can be told from "stuck".
+    if (tool.needsApproval) trace("tool", approved ? `${name} approved after ${decided - prepared} ms, running now` : `${name} was not approved`);
     if (!approved) {
       result = { declined: true, message: "The user did not approve this action. Do not try again unless the user asks." };
     } else {

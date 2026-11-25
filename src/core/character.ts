@@ -27,7 +27,10 @@ export function isCharacterState(value: unknown): value is CharacterState {
 //   "nudge":  the agent turned to the user by itself; the data is what it said
 //   "approval": an action is waiting for the user's yes or no; the data is {id, tool, summary}
 //   "place":  it moved; the data is the screen it is on now ("computer" or "device")
-export type CharacterSignal = "state" | "poke" | "hold" | "level" | "vision" | "glance" | "nudge" | "approval" | "place";
+//   "listen": the keyboard shortcut: open the microphone ("on") or close it ("off")
+//   "tool":   an action asked for through the desk device has finished; the data is the same record the chat gets
+//   "expired": an approval waited too long and now counts as "no"; the data is its id
+export type CharacterSignal = "state" | "poke" | "hold" | "level" | "vision" | "glance" | "nudge" | "approval" | "place" | "listen" | "tool" | "expired";
 
 export class Character {
   private current: CharacterState = "resting";

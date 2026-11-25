@@ -4,6 +4,7 @@
 import { getAccessToken, grantedScopes, listAccounts } from "./auth.js";
 import { loadSettings } from "../settings.js";
 
+const GOOGLE_TIMEOUT_MS = 30_000;
 const RECONNECT = "Ask the user to run `npm run connect-google` in the project folder and approve all the permissions.";
 
 /**
@@ -50,14 +51,26 @@ export async function googleFetch<T>(
     throw new Error(`The account ${email} has not granted the permission this action needs. ${RECONNECT}`);
   }
 
-  const response = await fetch(url, {
-    method: init.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${await getAccessToken(email)}`,
-      ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-  });
+  // Never wait forever: a request that Google has not answered in half a minute
+  // becomes a clear error the agent can tell the user, instead of a silent hang.
+  const token = await getAccessToken(email);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS),
+      method: init.method ?? "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new Error(`Google did not answer within ${GOOGLE_TIMEOUT_MS / 1000} seconds. The internet connection may be slow or down. Nothing is known to have been done: check before trying again.`);
+    }
+    throw new Error(`Could not reach Google: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   if (!response.ok) {
     const text = await response.text();
